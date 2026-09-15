@@ -102,6 +102,21 @@ export struct MessageItem {
             }
 
             // 图片优先 base64 渲染（避免 @Prop 深拷贝影响）
+            // if (this.msg.imageBase64.length > 0) {
+            //   Image(this.msg.imageBase64)
+            //     .width('70%')
+            //     .aspectRatio(1)
+            //     .borderRadius(8)
+            //     .margin({ bottom: 8 })
+            //     .objectFit(ImageFit.Contain)
+            //     .gesture(
+            //       LongPressGesture({ repeat: false, duration: 500 })
+            //         .onAction(() => {
+            //           this.onPreviewImage(this.msg.imageBase64)
+            //         })
+            //     )
+            // }
+
             if (this.msg.imageBase64.length > 0) {
               Image(this.msg.imageBase64)
                 .width('70%')
@@ -110,7 +125,7 @@ export struct MessageItem {
                 .margin({ bottom: 8 })
                 .objectFit(ImageFit.Contain)
                 .gesture(
-                  LongPressGesture({ repeat: false, duration: 500 })
+                  TapGesture({ count: 2 })
                     .onAction(() => {
                       this.onPreviewImage(this.msg.imageBase64)
                     })

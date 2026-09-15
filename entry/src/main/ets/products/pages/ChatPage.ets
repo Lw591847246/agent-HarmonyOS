@@ -14,8 +14,10 @@ import { Sidebar } from '../../common/ui/Sidebar'
 import { InputBar } from '../../common/ui/InputBar'
 import { MessageActionType } from '../../common/ui/MessageAction'
 import { Logger } from '../../common/logger/Logger'
-import { common } from '@kit.AbilityKit'
+import { ImagePreview } from '../../common/ui/ImagePreview'
 
+
+@Entry
 @Component
 export struct ChatPage {
   onLogout: () => void = () => {}
@@ -27,6 +29,7 @@ export struct ChatPage {
   @State sidebarVisible: boolean = false
   @State attachedFiles: FileItem[] = []
   @State showAddMenu: boolean = false
+  @State previewUrl: string = ''                // 空串 = 不显示预览
 
   private scroller: Scroller = new Scroller()
   private currentRequest: http.HttpRequest | null = null
@@ -105,6 +108,18 @@ export struct ChatPage {
   }
 
   async newConversation(): Promise<void> {
+
+    // 判断当前是否已经是新对话（没有消息）
+    if (this.messages.length === 0) {
+      promptAction.openToast({
+        message: '已在新对话中',
+        duration: 2000,
+        alignment: Alignment.Bottom,   // 从底部定位
+        offset: { dx: 0, dy: -1360 }    // 往上提 160vp
+      })
+      return
+    }
+
     const sid = await this.conversationVM.createNew()
     if (!sid) return
     this.currentSessionId = sid
@@ -243,89 +258,137 @@ export struct ChatPage {
   scrollToBottom(): void { this.scroller.scrollEdge(Edge.Bottom) }
 
   build() {
-    // ✅ Column 作为根节点，不再用 Stack 包
-    Column() {
-      // 顶栏
-      Row() {
-        Text('☰').fontSize(22).padding(12)
-          .onClick(() => { this.sidebarVisible = !this.sidebarVisible })
-        Text('AI 智能助手').fontSize(17).fontWeight(FontWeight.Medium).layoutWeight(1)
+    // ✅ 根节点改为 Stack：Column 是页面主体，ImagePreview 是最顶层的覆盖层
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column() {
+        // 顶栏
+        Row() {
+          Text('☰').fontSize(22).padding(12)
+            .onClick(() => { this.sidebarVisible = !this.sidebarVisible })
+          Text('AI 智能助手').fontSize(17).fontWeight(FontWeight.Medium).layoutWeight(1)
 
-        // 右上角：新建会话（加号外圆圈）
-        Button() {
-          Text('+')
-            .fontSize(18)
-            .fontColor(Color.Black)
-            .fontWeight(FontWeight.Regular)
+          // 右上角：新建会话（加号外圆圈）
+          Button() {
+            Text('+')
+              .fontSize(18)
+              .fontColor(Color.Black)
+              .fontWeight(FontWeight.Regular)
+          }
+          .width(24)
+          .height(24)
+          .borderRadius(14)
+          .backgroundColor(Color.Transparent)
+          .border({ width: 1.2, color: Color.Black })
+          .margin({ right: 12 })
+          .onClick(() => this.newConversation())
         }
-        .width(24)
-        .height(24)
-        .borderRadius(14)
-        .backgroundColor(Color.Transparent)
-        .border({ width: 1.2, color: Color.Black })
-        .margin({ right: 12 })
-        .onClick(() => this.newConversation())
-      }
-      .width('100%').height(56).backgroundColor(Color.White)
-      .border({ width: { bottom: 1 }, color: '#eee' })
+        .width('100%').height(56).backgroundColor(Color.White)
+        .border({ width: { bottom: 1 }, color: '#eee' })
 
-      // 消息列表
-      List({ scroller: this.scroller }) {
-        ForEach(this.messages, (msg: ChatMessage) => {
-          ListItem() {
-            MessageItem({
-              msg: msg,
-              onAction: (t: string) => { this.handleAction(t, msg) }
+        // 消息区（Stack 叠加：列表 + 空态欢迎语）
+        Stack({ alignContent: Alignment.Center }) {
+          List({ scroller: this.scroller }) {
+            ForEach(this.messages, (msg: ChatMessage) => {
+              ListItem() {
+                MessageItem({
+                  msg: msg,
+                  onAction: (t: string) => { this.handleAction(t, msg) },
+                  onPreviewImage: (imageUrl: string) => {
+                    // ← 关键：只改状态，渲染交给根节点 Stack 顶层的覆盖层
+                    this.previewUrl = imageUrl
+                  }
+                })
+              }
+            }, (msg: ChatMessage) => {
+              const imgFlag = msg.imageBase64.length > 0 ? 'img' : 'no'
+              return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}`
             })
           }
-        }, (msg: ChatMessage) => {
-          const imgFlag = msg.imageBase64.length > 0 ? 'img' : 'no'
-          return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}`
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#fafafa')
+
+          // 空态欢迎语：只在没有任何消息时显示
+          if (this.messages.length === 0) {
+            Column({ space: 12 }) {
+              Text('你好，有什么我能帮你的吗？')
+                .fontSize(20)
+                .fontWeight(FontWeight.Medium)
+                .fontColor('#4b4b4b')
+                .textAlign(TextAlign.Center)
+
+              Text('我可以帮你解答问题、阅读文档、生成图片')
+                .fontSize(14)
+                .fontColor('#999999')
+                .textAlign(TextAlign.Center)
+            }
+            .width('100%')
+            .padding({ left: 32, right: 32 })
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          }
+          // ⚠️ 原来的 ImagePreview 已从这里移出，见根 Stack 末尾
+        }
+        .layoutWeight(1)
+        .width('100%')
+
+        // 附件提示（紧贴输入栏上方）
+        if (this.attachedFiles.length > 0) {
+          Row() {
+            Text(`已选择 ${this.attachedFiles.length} 个文件`)
+              .fontSize(12).fontColor('#666').layoutWeight(1)
+            Text('清空').fontSize(12).fontColor('#e74c3c')
+              .onClick(() => { this.attachedFiles = [] })
+          }
+          .width('100%').padding({ left: 16, right: 16, top: 6, bottom: 6 })
+          .backgroundColor('#fff9e6')
+        }
+
+        // 输入栏
+        InputBar({
+          text: $inputText,
+          loading: this.isLoadingNow(),
+          canSend: this.isCanSend(),
+          showAddMenu: this.showAddMenu,
+          onSend: () => this.handleSubmit(),
+          onToggleAddMenu: () => { this.showAddMenu = !this.showAddMenu },
+          onVoice: () => promptAction.openToast({ message: '语音开发中' }),
+          onCamera: () => { this.showAddMenu = false; this.onCameraOrAlbum() },
+          onAlbum: () => { this.showAddMenu = false; this.onCameraOrAlbum() },
+          onFile: () => { this.showAddMenu = false; this.onPickFile() }
         })
       }
-      .layoutWeight(1)      // ✅ 占满剩余高度
       .width('100%')
-      .backgroundColor('#fafafa')
-
-      // 附件提示（紧贴输入栏上方）
-      if (this.attachedFiles.length > 0) {
-        Row() {
-          Text(`已选择 ${this.attachedFiles.length} 个文件`)
-            .fontSize(12).fontColor('#666').layoutWeight(1)
-          Text('清空').fontSize(12).fontColor('#e74c3c')
-            .onClick(() => { this.attachedFiles = [] })
+      .height('100%')
+      .backgroundColor('#fff')
+      // ✅ 侧边栏浮层保持原样（仍绑在 Column 上）
+      .bindContentCover(
+        this.sidebarVisible,
+        this.SidebarOverlay(),
+        {
+          modalTransition: ModalTransition.NONE,
+          onDisappear: () => { this.sidebarVisible = false }
         }
-        .width('100%').padding({ left: 16, right: 16, top: 6, bottom: 6 })
-        .backgroundColor('#fff9e6')
-      }
+      )
 
-      // 输入栏
-      InputBar({
-        text: $inputText,
-        loading: this.isLoadingNow(),
-        canSend: this.isCanSend(),
-        showAddMenu: this.showAddMenu,
-        onSend: () => this.handleSubmit(),
-        onToggleAddMenu: () => { this.showAddMenu = !this.showAddMenu },
-        onVoice: () => promptAction.openToast({ message: '语音开发中' }),
-        onCamera: () => { this.showAddMenu = false; this.onCameraOrAlbum() },
-        onAlbum: () => { this.showAddMenu = false; this.onCameraOrAlbum() },
-        onFile: () => { this.showAddMenu = false; this.onPickFile() }
-      })
+      // ✅ 全屏图片预览：根 Stack 的最后一个子节点，覆盖整页（含输入栏）
+      if (this.previewUrl.length > 0) {
+        ImagePreview({
+          url: this.previewUrl,
+          onClose: () => {
+            this.previewUrl = ''
+          }
+        })
+          .width('100%')
+          .height('100%')
+      }
     }
     .width('100%')
-    .height('100%')          // ✅ 用百分比，随父容器压缩
-    .backgroundColor('#fff')
-    // ✅ 绑定侧边栏浮层（不参与布局，不阻挡压缩）
-    .bindContentCover(
-      this.sidebarVisible,
-      this.SidebarOverlay(),
-      {
-        modalTransition: ModalTransition.NONE,
-        onDisappear: () => { this.sidebarVisible = false }
-      }
-    )
+    .height('100%')
   }
+
+
+  //====================
 
   @Builder
   SidebarOverlay() {
