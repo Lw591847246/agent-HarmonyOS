@@ -27,10 +27,11 @@ export struct ChatPage {
   @State loadingSessionId: string = ''
   @State currentSessionId: string = ''
   @State sidebarVisible: boolean = false
-  @State attachedFiles: FileItem[] = []        // 文档附件
-  @State attachedImages: FileItem[] = []       // 图片附件（新增）
+  @State attachedFiles: FileItem[] = []
   @State showAddMenu: boolean = false
-  @State previewUrl: string = ''               // 空串 = 不显示预览
+  @State previewUrl: string = ''                // 空串 = 不显示预览
+  @State attachedImages: FileItem[] = []
+
 
   private scroller: Scroller = new Scroller()
   private currentRequest: http.HttpRequest | null = null
@@ -43,7 +44,6 @@ export struct ChatPage {
   private isLoadingNow(): boolean {
     return this.loadingSessionId.length > 0 && this.loadingSessionId === this.currentSessionId
   }
-
   private isCanSend(): boolean {
     return this.inputText.trim().length > 0
       || this.attachedFiles.length > 0
@@ -85,6 +85,7 @@ export struct ChatPage {
   /** 页面进入后台时触发 */
   onPageHide(): void {
     Logger.i('[ChatPage] onPageHide：进入后台，标记未完成消息并清理请求')
+    // 尝试主动清理请求（有些场景下 onFinish 会因此触发）
     if (this.currentRequest) {
       try {
         this.currentRequest.destroy()
@@ -95,6 +96,7 @@ export struct ChatPage {
     }
     this.loadingSessionId = ''
   }
+
 
   async init(): Promise<void> {
     await this.loadConversations()
@@ -110,13 +112,14 @@ export struct ChatPage {
   }
 
   async newConversation(): Promise<void> {
+
     // 判断当前是否已经是新对话（没有消息）
     if (this.messages.length === 0) {
       promptAction.openToast({
         message: '已在新对话中',
         duration: 2000,
-        alignment: Alignment.Bottom,
-        offset: { dx: 0, dy: -1360 }
+        alignment: Alignment.Bottom,   // 从底部定位
+        offset: { dx: 0, dy: -1360 }    // 往上提 160vp
       })
       return
     }
@@ -146,23 +149,12 @@ export struct ChatPage {
     this.send()
   }
 
-  // ============================================================
-  // 发送总入口
-  //   - 有图片 / 文档 → sendAttachments（合并走 /process-file）
-  //   - 纯文本        → sendStream
-  // ============================================================
   send(): void {
     const text = this.inputText.trim()
     if (this.isLoadingNow()) return
+    if (text.length === 0 && this.attachedFiles.length === 0) return
+    if (this.attachedFiles.length > 0) { this.sendFiles(text); return }
 
-    if (this.attachedImages.length > 0 || this.attachedFiles.length > 0) {
-      this.sendAttachments(text)
-      return
-    }
-
-    if (text.length === 0) return
-
-    // ---- 纯文本发送 ----
     this.messages.push(this.chatVM.createUserMessage(text))
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
@@ -185,52 +177,18 @@ export struct ChatPage {
     })
   }
 
-  // ============================================================
-  // 统一发送附件（图片 + 文档），复用后端 /agent/v1/process-file
-  // 后端 FileService.process_files 会按扩展名自动分流处理
-  //
-  // 关于 text 的取值：
-  //   ① 用户填了提示词 → 原文传
-  //   ② 用户没填 + 有图片 → 传 "请提取图片中的文字"，
-  //      命中后端 _process_image 的 OCR 关键词分支
-  //   ③ 用户没填 + 只有文档 → 传空串，后端走"请概括"
-  // ============================================================
-  async sendAttachments(text: string): Promise<void> {
+  async sendFiles(text: string): Promise<void> {
     if (this.isLoadingNow()) return
-
-    const images = this.attachedImages
-    const docs = this.attachedFiles
-    this.attachedImages = []
+    this.loadingSessionId = this.currentSessionId
+    const files = this.attachedFiles
     this.attachedFiles = []
 
-    const allFiles: FileItem[] = [...images, ...docs]
-    const hasImages = images.length > 0
-
-    // ① 给后端的实际 text
-    let backendText = text
-    if (text.length === 0 && hasImages) {
-      backendText = '请提取图片中的文字'
-    }
-
-    // ② 用户消息展示文本
-    let displayText = text
-    if (text.length === 0) {
-      if (hasImages) {
-        displayText = '请提取图片中的内容'
-      } else {
-        displayText = `已上传 ${allFiles.length} 个文件`
-      }
-    }
-
-    this.messages.push(this.chatVM.createUserMessage(displayText, allFiles.map(f => f.name)))
+    this.messages.push(this.chatVM.createUserMessage(text, files.map(f => f.name)))
     this.messages.push(this.chatVM.createAssistantPlaceholder())
     this.inputText = ''
-    this.loadingSessionId = this.currentSessionId
     this.messages = [...this.messages]
-    this.scrollToBottom()
 
-    // ③ 复用 sendFiles（内部就是 /process-file 接口）
-    const m = await this.chatVM.sendFiles(this.currentSessionId, backendText, allFiles)
+    const m = await this.chatVM.sendFiles(this.currentSessionId, text, files)
     // 替换最后一个占位消息
     this.messages[this.messages.length - 1] = m
     this.messages = [...this.messages]
@@ -279,26 +237,15 @@ export struct ChatPage {
     else if (type === MessageActionType.SHARE) promptAction.openToast({ message: '分享开发中' })
   }
 
-  // ============================================================
-  // 拍照 / 相册：只暂存，不立刻处理
-  // ============================================================
   async onCameraOrAlbum(): Promise<void> {
     const files = await this.fileVM.pickImages(3)
     if (!files.length) return
-
-    // 按 uri 去重（用户反复选同一张图时不重复添加）
-    const exist = new Set(this.attachedImages.map(f => f.uri))
-    const add = files.filter(f => !exist.has(f.uri))
-
-    // 总量上限 9 张
-    const maxCount = 9
-    const total = this.attachedImages.length + add.length
-    if (total > maxCount) {
-      promptAction.openToast({ message: `最多选择 ${maxCount} 张图片` })
-      this.attachedImages = [...this.attachedImages, ...add].slice(0, maxCount)
-      return
-    }
-    this.attachedImages = [...this.attachedImages, ...add]
+    this.loadingSessionId = this.currentSessionId
+    const m = await this.chatVM.ocr(files)
+    this.messages.push(m)
+    this.messages = [...this.messages]
+    this.loadingSessionId = ''
+    this.scrollToBottom()
   }
 
   async onPickFile(): Promise<void> {
@@ -310,17 +257,12 @@ export struct ChatPage {
     this.onLogout()
   }
 
-  /** 删除单张已选图片 */
-  private removeImageAt(index: number): void {
-    const next = this.attachedImages.slice()
-    next.splice(index, 1)
-    this.attachedImages = next
-  }
+
 
   scrollToBottom(): void { this.scroller.scrollEdge(Edge.Bottom) }
 
   build() {
-    // 根节点 Stack：Column 是页面主体，ImagePreview 是最顶层的覆盖层
+    // ✅ 根节点改为 Stack：Column 是页面主体，ImagePreview 是最顶层的覆盖层
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
         // 顶栏
@@ -356,6 +298,7 @@ export struct ChatPage {
                   msg: msg,
                   onAction: (t: string) => { this.handleAction(t, msg) },
                   onPreviewImage: (imageUrl: string) => {
+                    // ← 关键：只改状态，渲染交给根节点 Stack 顶层的覆盖层
                     this.previewUrl = imageUrl
                   }
                 })
@@ -388,74 +331,12 @@ export struct ChatPage {
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
           }
+          // ⚠️ 原来的 ImagePreview 已从这里移出，见根 Stack 末尾
         }
         .layoutWeight(1)
         .width('100%')
 
-        // ============================================================
-        // 图片附件条：缩略图 + 文件名 + 单个删除 + 清空
-        // ============================================================
-        if (this.attachedImages.length > 0) {
-          Column() {
-            Row() {
-              Text(`已选择 ${this.attachedImages.length} 张图片`)
-                .fontSize(12).fontColor('#666').layoutWeight(1)
-              Text('清空').fontSize(12).fontColor('#e74c3c')
-                .onClick(() => { this.attachedImages = [] })
-            }
-            .width('100%')
-            .margin({ bottom: 6 })
-
-            Scroll() {
-              Row({ space: 10 }) {
-                ForEach(this.attachedImages, (f: FileItem, idx: number) => {
-                  Stack({ alignContent: Alignment.TopEnd }) {
-                    Column({ space: 4 }) {
-                      // ⚠️ 若 FileItem 的图片路径字段不叫 uri，改成你的字段名
-                      Image(f.uri)
-                        .width(60).height(60)
-                        .borderRadius(6)
-                        .objectFit(ImageFit.Cover)
-                        .backgroundColor('#eee')
-
-                      Text(f.name)
-                        .fontSize(10)
-                        .fontColor('#666')
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .width(60)
-                        .textAlign(TextAlign.Center)
-                    }
-                    .padding(4)
-                    .backgroundColor(Color.White)
-                    .borderRadius(8)
-
-                    // 单个删除按钮
-                    Text('✕')
-                      .fontSize(11)
-                      .fontColor(Color.White)
-                      .width(16).height(16)
-                      .textAlign(TextAlign.Center)
-                      .borderRadius(8)
-                      .backgroundColor('#00000099')
-                      .margin({ top: -4, right: -4 })
-                      .onClick(() => this.removeImageAt(idx))
-                  }
-                  .width(72).height(92)
-                }, (f: FileItem, idx: number) => `${f.uri}_${idx}`)
-              }
-            }
-            .scrollable(ScrollDirection.Horizontal)
-            .scrollBar(BarState.Off)
-            .width('100%')
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-          .backgroundColor('#fff9e6')
-          .alignItems(HorizontalAlign.Start)
-        }
-
-        // 文档附件条（紧贴输入栏上方）
+        // 附件提示（紧贴输入栏上方）
         if (this.attachedFiles.length > 0) {
           Row() {
             Text(`已选择 ${this.attachedFiles.length} 个文件`)
@@ -484,6 +365,7 @@ export struct ChatPage {
       .width('100%')
       .height('100%')
       .backgroundColor('#fff')
+      // ✅ 侧边栏浮层保持原样（仍绑在 Column 上）
       .bindContentCover(
         this.sidebarVisible,
         this.SidebarOverlay(),
@@ -493,7 +375,7 @@ export struct ChatPage {
         }
       )
 
-      // 全屏图片预览：根 Stack 的最后一个子节点，覆盖整页（含输入栏）
+      // ✅ 全屏图片预览：根 Stack 的最后一个子节点，覆盖整页（含输入栏）
       if (this.previewUrl.length > 0) {
         ImagePreview({
           url: this.previewUrl,
@@ -509,6 +391,7 @@ export struct ChatPage {
     .height('100%')
   }
 
+
   //====================
 
   @Builder
@@ -518,10 +401,10 @@ export struct ChatPage {
         conversations: this.conversations,
         currentSessionId: this.currentSessionId,
         onSelect: (sid: string) => {
-          this.selectConversation(sid)
+          this.selectConversation(sid)      // 包 {}，返回 void
         },
         onLogout: () => {
-          this.logout()
+          this.logout()                     // 包 {}，返回 void
         }
       })
         .width('75%')
