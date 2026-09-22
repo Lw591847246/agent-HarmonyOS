@@ -15,6 +15,7 @@ import { InputBar } from '../../common/ui/InputBar'
 import { MessageActionType } from '../../common/ui/MessageAction'
 import { Logger } from '../../common/logger/Logger'
 import { ImagePreview } from '../../common/ui/ImagePreview'
+import { window } from '@kit.ArkUI'
 
 
 @Entry
@@ -30,6 +31,7 @@ export struct ChatPage {
   @State attachedFiles: FileItem[] = []        // 文档附件
   @State attachedImages: FileItem[] = []       // 图片附件（新增）
   @State showAddMenu: boolean = false
+  @Watch('onPreviewUrlChange')
   @State previewUrl: string = ''               // 空串 = 不显示预览
 
   private scroller: Scroller = new Scroller()
@@ -51,6 +53,21 @@ export struct ChatPage {
   }
 
   aboutToAppear(): void { this.init() }
+
+
+  /** previewUrl 变化时切换系统返回手势 */
+  onPreviewUrlChange(): void {
+    this.setGestureBackEnabled(this.previewUrl.length === 0)
+  }
+
+  private async setGestureBackEnabled(enabled: boolean): Promise<void> {
+    try {
+      const win = await window.getLastWindow(getContext(this))
+      win.setGestureBackEnabled(enabled)
+    } catch (e) {
+      Logger.e('setGestureBackEnabled 失败: ' + (e as Error).message)
+    }
+  }
 
   /** 页面回到前台时触发。App 从后台切回、从其他页返回时都会调用 */
   onPageShow(): void {
@@ -85,6 +102,8 @@ export struct ChatPage {
   /** 页面进入后台时触发 */
   onPageHide(): void {
     Logger.i('[ChatPage] onPageHide：进入后台，标记未完成消息并清理请求')
+    // ← 新增这行，防止退出时手势还处于禁用状态
+    this.setGestureBackEnabled(true)
     if (this.currentRequest) {
       try {
         this.currentRequest.destroy()
