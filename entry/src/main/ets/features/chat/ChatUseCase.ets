@@ -136,22 +136,48 @@ export class ChatUseCase {
   }
 
   /** 文件上传 */
+  /** 文件上传 */
   async sendFiles(sessionId: string, text: string, files: FileItem[]): Promise<ChatMessage> {
     const startMs = DateUtil.nowMs()
     const msg = ChatUseCase.createMessage('assistant', '')
     msg.thinkingDone = true
     try {
       const resp = await this.repo.uploadFiles(sessionId, text, files)
-      if (resp.type === 'text') msg.content = resp.content ?? ''
+
+      // ⭐ 核心修复：按响应类型分派处理
+      if (resp.type === 'image') {
+        // ✅ 图生图返回：渲染图片
+        msg.imageBase64 = this.toDataUri(resp.image_base64 || '')
+        msg.content = resp.content ?? '[图片已生成]'
+      }
+      else if (resp.type === 'text') {
+        msg.content = resp.content ?? ''
+      }
       else if (resp.type === 'multi') {
         const parts: string[] = []
+        let imageHandled = false
         for (const item of resp.results ?? []) {
-          if (item.type === 'text') parts.push(item.content ?? '')
-          else if (item.type === 'image') parts.push('[图片已生成]')
+          if (item.type === 'text') {
+            parts.push(item.content ?? '')
+          } else if (item.type === 'image') {
+            if (!imageHandled) {
+              // ⭐ 修复：multi 里也要把第一张图赋值给 msg.imageBase64
+              msg.imageBase64 = this.toDataUri(item.image_base64 || '')
+              imageHandled = true
+            }
+            parts.push('[图片已生成]')
+          }
         }
         msg.content = parts.join('\n\n')
-      } else if (resp.type === 'error') msg.content = resp.content ?? '[请求出错]'
-      else msg.content = '[未知响应类型]'
+      }
+      else if (resp.type === 'error') {
+        msg.content = resp.content ?? '[请求出错]'
+      }
+      else {
+        // 兜底：如果真的遇到未知类型，至少把 content 显示出来
+        msg.content = resp.content ?? '[未知响应类型]'
+      }
+
       msg.duration = DateUtil.elapsedSeconds(startMs)
       msg.completed = true
     } catch (e) {

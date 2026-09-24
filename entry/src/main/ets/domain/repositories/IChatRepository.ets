@@ -10,13 +10,17 @@ export interface StreamCallbacks {
 export interface ProcessFileResult {
   type: string
   content?: string
+  image_base64?: string   // ← 新增，图生图返回的单张图片
+  prompt?: string         // ← 新增，图生图使用的提示词
   results?: ProcessFileResultItem[]
 }
 
+// ⭐ 核心修复 2：ProcessFileResultItem 补上 prompt
 export interface ProcessFileResultItem {
   type: string
   content?: string
-  image_base64?: string
+  image_base64?: string   // 已有
+  prompt?: string         // ← 新增
 }
 
 export interface IChatRepository {

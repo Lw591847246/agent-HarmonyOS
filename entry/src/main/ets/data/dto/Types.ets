@@ -86,9 +86,12 @@ export interface ChatRequestDto {
   session_id: string
 }
 
+/* ========== 文件处理响应（支持图生图） ========== */
 export interface ProcessFileResponseDto {
-  type: string
-  content?: string
+  type: string           // "text" | "image" | "multi"
+  content?: string       // 文本内容
+  image_base64?: string  // 图生图返回的图片 base64
+  prompt?: string        // 图生图使用的提示词
   results?: ProcessFileResultItemDto[]
 }
 
@@ -96,12 +99,15 @@ export interface ProcessFileResultItemDto {
   type: string
   content?: string
   image_base64?: string
+  prompt?: string
 }
 
+// StreamJsonResponseDto 同理，补齐字段
 export interface StreamJsonResponseDto {
   type?: string
   content?: string
   image_base64?: string
+  prompt?: string
   results?: StreamJsonResultItemDto[]
 }
 
@@ -109,6 +115,7 @@ export interface StreamJsonResultItemDto {
   type?: string
   content?: string
   image_base64?: string
+  prompt?: string
 }
 
 export interface OcrResponseDto {
