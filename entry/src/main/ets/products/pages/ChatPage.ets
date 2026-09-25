@@ -120,7 +120,13 @@ export struct ChatPage {
     if (this.conversations.length > 0) {
       await this.selectConversation(this.conversations[0].sessionId)
     } else {
-      await this.newConversation()
+      // ⭐ 关键修复：初始化时没有会话，强制创建，不走 newConversation 的保护逻辑
+      const sid = await this.conversationVM.createNew()
+      if (sid) {
+        this.currentSessionId = sid
+        this.messages = []
+        await this.loadConversations()
+      }
     }
   }
 
@@ -128,9 +134,9 @@ export struct ChatPage {
     this.conversations = await this.conversationVM.loadList()
   }
 
-  async newConversation(): Promise<void> {
-    // 判断当前是否已经是新对话（没有消息）
-    if (this.messages.length === 0) {
+  async newConversation(force: boolean = false): Promise<void> {
+    // ⭐ 只有用户主动点"+"时才做"已在新对话中"的保护
+    if (!force && this.messages.length === 0) {
       promptAction.openToast({
         message: '已在新对话中',
         duration: 2000,
@@ -170,10 +176,11 @@ export struct ChatPage {
   //   - 有图片 / 文档 → sendAttachments（合并走 /process-file）
   //   - 纯文本        → sendStream
   // ============================================================
-  send(): void {
+  async send(): Promise<void> {
     const text = this.inputText.trim()
     if (this.isLoadingNow()) return
 
+    // 有附件 → 走 sendAttachments
     if (this.attachedImages.length > 0 || this.attachedFiles.length > 0) {
       this.sendAttachments(text)
       return
@@ -187,21 +194,32 @@ export struct ChatPage {
     this.messages.push(assistantMsg)
 
     this.inputText = ''
-    this.loadingSessionId = this.currentSessionId
+    this.loadingSessionId = this.currentSessionId || 'pending'
     this.messages = [...this.messages]
     this.scrollToBottom()
 
-    this.currentRequest = this.chatVM.sendStream({
-      text,
-      sessionId: this.currentSessionId,
-      assistantMsg,
-      onRefresh: () => { this.messages = [...this.messages] },
-      onScroll: () => this.scrollToBottom(),
-      onFinish: () => {
-        this.loadingSessionId = ''
-        this.loadConversations()
-      }
-    })
+    try {
+      // ⭐ await 拿到 HttpRequest
+      this.currentRequest = await this.chatVM.sendStream({
+        text,
+        sessionId: this.currentSessionId,
+        assistantMsg,
+        onRefresh: () => { this.messages = [...this.messages] },
+        onScroll: () => this.scrollToBottom(),
+        onFinish: () => {
+          this.loadingSessionId = ''
+          this.loadConversations()
+        },
+        // ⭐ session_id 兜底回调
+        onSessionIdChange: (sid: string) => {
+          this.currentSessionId = sid
+          Logger.i(`[ChatPage] session_id 兜底更新为: ${sid}`)
+        }
+      })
+    } catch (e) {
+      Logger.e('sendStream 失败: ' + (e as Error).message)
+      this.loadingSessionId = ''
+    }
   }
 
   // ============================================================
@@ -260,26 +278,36 @@ export struct ChatPage {
   async regenerate(userMsg: ChatMessage): Promise<void> {
     if (this.isLoadingNow()) return
     const text = userMsg.content
-    if (!text || !this.currentSessionId) return
+    if (!text) return
 
     this.messages.push(this.chatVM.createUserMessage(text, userMsg.files))
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
     this.messages = [...this.messages]
-    this.loadingSessionId = this.currentSessionId
+    this.loadingSessionId = this.currentSessionId || 'pending'
     this.scrollToBottom()
 
-    this.currentRequest = this.chatVM.sendStream({
-      text,
-      sessionId: this.currentSessionId,
-      assistantMsg,
-      onRefresh: () => { this.messages = [...this.messages] },
-      onScroll: () => this.scrollToBottom(),
-      onFinish: () => {
-        this.loadingSessionId = ''
-        this.loadConversations()
-      }
-    })
+    try {
+      // ⭐ await 拿到 HttpRequest
+      this.currentRequest = await this.chatVM.sendStream({
+        text,
+        sessionId: this.currentSessionId,
+        assistantMsg,
+        onRefresh: () => { this.messages = [...this.messages] },
+        onScroll: () => this.scrollToBottom(),
+        onFinish: () => {
+          this.loadingSessionId = ''
+          this.loadConversations()
+        },
+        onSessionIdChange: (sid: string) => {
+          this.currentSessionId = sid
+          Logger.i(`[ChatPage] regenerate session_id 兜底更新为: ${sid}`)
+        }
+      })
+    } catch (e) {
+      Logger.e('regenerate sendStream 失败: ' + (e as Error).message)
+      this.loadingSessionId = ''
+    }
   }
 
   copyMessage(msg: ChatMessage): void {
@@ -380,7 +408,9 @@ export struct ChatPage {
                 })
               }
             }, (msg: ChatMessage) => {
-              const imgFlag = msg.imageBase64.length > 0 ? 'img' : 'no'
+              // ⭐ 用 thumbUrl 替代 imageThumbBase64
+              const imgFlag = msg.imageBase64.length > 0 ? 'img'
+                : (msg.thumbUrl && msg.thumbUrl.length > 0 ? 'thumb' : 'no')
               return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}`
             })
           }

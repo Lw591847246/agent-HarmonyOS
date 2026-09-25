@@ -3,6 +3,7 @@ import { Conversation } from '../../domain/models/Conversation'
 import { ChatMessage } from '../../domain/models/ChatMessage'
 import { ChatUseCase } from '../chat/ChatUseCase'
 import { ErrorHandler } from '../../common/exceptions/ErrorHandler'
+import { EnvConfig } from '../../common/config/EnvConfig'  // ⭐ 确认有这个 import
 
 export class ConversationViewModel {
   private uc = new ConversationUseCase()
@@ -29,6 +30,19 @@ export class ConversationViewModel {
       return list.map((h) => {
         const m = ChatUseCase.createMessage(h.role, h.content)
         m.completed = true
+        m.thinkingDone = true
+
+        if (h.message_type === 'image') {
+          if (h.image_url) {
+            m.imageUrl = h.image_url.startsWith('http')
+              ? h.image_url : EnvConfig.AGENT_BASE_URL + h.image_url
+          }
+          if (h.thumb_url) {
+            m.thumbUrl = h.thumb_url.startsWith('http')
+              ? h.thumb_url : EnvConfig.AGENT_BASE_URL + h.thumb_url
+          }
+        }
+
         return m
       })
     } catch (e) {

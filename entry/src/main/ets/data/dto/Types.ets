@@ -71,8 +71,13 @@ export interface CreateConversationResponseDto {
 }
 
 export interface HistoryMessageDto {
+  id?: number
   role: string
   content: string
+  created_at?: string
+  message_type?: string
+  image_url?: string
+  thumb_url?: string
 }
 
 export interface HistoryResponseDto {
