@@ -7,25 +7,43 @@ export interface StreamCallbacks {
   onError: (err: string) => void
 }
 
+// ⭐ 新增：文件流式上传回调
+export interface UploadFilesStreamCallbacks {
+  onChunk: (content: string) => void
+  onImage: (base64: string) => void
+  onFinish: () => void
+  onError: (err: string) => void
+}
+
+
 export interface ProcessFileResult {
   type: string
   content?: string
-  image_base64?: string   // ← 新增，图生图返回的单张图片
-  prompt?: string         // ← 新增，图生图使用的提示词
+  image_base64?: string
+  prompt?: string
   results?: ProcessFileResultItem[]
 }
 
-// ⭐ 核心修复 2：ProcessFileResultItem 补上 prompt
 export interface ProcessFileResultItem {
   type: string
   content?: string
-  image_base64?: string   // 已有
-  prompt?: string         // ← 新增
+  image_base64?: string
+  prompt?: string
 }
 
 export interface IChatRepository {
   stream(text: string, sessionId: string, cb: StreamCallbacks): http.HttpRequest
+
   uploadFiles(sessionId: string, text: string, files: FileItem[]): Promise<ProcessFileResult>
+
+  // ⭐ 新增：流式上传
+  uploadFilesStream(
+    sessionId: string,
+    text: string,
+    files: FileItem[],
+    cb: UploadFilesStreamCallbacks,
+  ): http.HttpRequest
+
   ocr(files: FileItem[]): Promise<OcrResult>
 }
 

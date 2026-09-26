@@ -155,8 +155,13 @@ export struct ChatPage {
   }
 
   async selectConversation(sessionId: string): Promise<void> {
+    Logger.i(`[ChatPage] selectConversation 入参 sessionId=${sessionId}`)
     this.loadingSessionId = ''
     this.currentSessionId = sessionId
+
+    // ⭐ 关键：同步给 ChatViewModel，避免它内部缓存还是旧值
+    this.chatVM.setSessionId(sessionId)
+
     this.sidebarVisible = false
     this.messages = await this.conversationVM.loadHistory(sessionId)
     this.scrollToBottom()
@@ -233,6 +238,8 @@ export struct ChatPage {
   //   ③ 用户没填 + 只有文档 → 传空串，后端走"请概括"
   // ============================================================
   async sendAttachments(text: string): Promise<void> {
+    Logger.i(`[ChatPage] sendAttachments 发送前 currentSessionId=${this.currentSessionId}`)
+
     if (this.isLoadingNow()) return
 
     const images = this.attachedImages
@@ -243,13 +250,11 @@ export struct ChatPage {
     const allFiles: FileItem[] = [...images, ...docs]
     const hasImages = images.length > 0
 
-    // ① 给后端的实际 text
     let backendText = text
     if (text.length === 0 && hasImages) {
       backendText = '请提取图片中的文字'
     }
 
-    // ② 用户消息展示文本
     let displayText = text
     if (text.length === 0) {
       if (hasImages) {
@@ -260,22 +265,46 @@ export struct ChatPage {
     }
 
     this.messages.push(this.chatVM.createUserMessage(displayText, allFiles.map(f => f.name)))
-    this.messages.push(this.chatVM.createAssistantPlaceholder())
+    // ⭐ 拿住引用，流式更新它
+    const assistantMsg = this.chatVM.createAssistantPlaceholder()
+    this.messages.push(assistantMsg)
     this.inputText = ''
     this.loadingSessionId = this.currentSessionId
     this.messages = [...this.messages]
     this.scrollToBottom()
 
-    // ③ 复用 sendFiles（内部就是 /process-file 接口）
-    const m = await this.chatVM.sendFiles(this.currentSessionId, backendText, allFiles)
-    // 替换最后一个占位消息
-    this.messages[this.messages.length - 1] = m
-    this.messages = [...this.messages]
-    this.loadingSessionId = ''
-    this.scrollToBottom()
+    try {
+      // ⭐ 改走流式：等待 HttpRequest 拿回来，配合 onRefresh 刷新 UI
+      this.currentRequest = await this.chatVM.sendFilesStream(
+        this.currentSessionId,
+        backendText,
+        allFiles,
+        assistantMsg,
+        () => {
+          // 每收到一块就刷新 UI（打字机效果）
+          this.messages = [...this.messages]
+          this.scrollToBottom()
+        },
+        () => {
+          // 全部完成
+          this.loadingSessionId = ''
+          this.loadConversations()
+        },
+      )
+    } catch (e) {
+      Logger.e('sendFilesStream 失败: ' + (e as Error).message)
+      this.loadingSessionId = ''
+      if (assistantMsg.content.length === 0) {
+        assistantMsg.content = `[上传失败: ${(e as Error).message}]`
+      }
+      assistantMsg.completed = true
+      this.messages = [...this.messages]
+    }
   }
 
+
   async regenerate(userMsg: ChatMessage): Promise<void> {
+    Logger.i(`[ChatPage] regenerate 发送前 currentSessionId=${this.currentSessionId}`)
     if (this.isLoadingNow()) return
     const text = userMsg.content
     if (!text) return

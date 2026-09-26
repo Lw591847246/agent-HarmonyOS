@@ -19,12 +19,23 @@ export interface SendStreamOptions {
   onFinish: () => void
 }
 
+// ⭐ 新增：文件流式选项
+export interface SendFilesStreamOptions {
+  sessionId: string
+  text: string
+  files: FileItem[]
+  assistantMsg: ChatMessage
+  onRefresh: () => void
+  onFinish: () => void
+}
+
 export class ChatUseCase {
   private repo: IChatRepository
 
   constructor(context: Context) {
     this.repo = new ChatRepositoryImpl(context)
   }
+
   static createMessage(role: string, content: string): ChatMessage {
     msgCounter++
     const m = new ChatMessage()
@@ -34,7 +45,7 @@ export class ChatUseCase {
     return m
   }
 
-  /** 处理非流式 JSON 响应 */
+  /** 处理非流式 JSON 响应（保留，兼容旧逻辑） */
   private async applyJsonResponse(data: StreamJsonResponseDto, msg: ChatMessage): Promise<void> {
     const type = data.type || ''
     if (type === 'image') {
@@ -71,7 +82,7 @@ export class ChatUseCase {
     return 'data:image/png;base64,' + raw
   }
 
-  /** 流式对话 */
+  /** 流式对话（保持不变） */
   sendStream(opt: SendStreamOptions): http.HttpRequest {
     const state = new StreamParseState()
     let jsonMode = false
@@ -109,9 +120,7 @@ export class ChatUseCase {
           try {
             const data: StreamJsonResponseDto = JSON.parse(jsonBuffer) as StreamJsonResponseDto
             this.applyJsonResponse(data, opt.assistantMsg)
-              .then(() => {
-                finalize()
-              })
+              .then(() => { finalize() })
               .catch((e: Error) => {
                 Logger.e(`applyJsonResponse 失败: ${e.message}`)
                 opt.assistantMsg.content = '[响应解析失败]'
@@ -135,33 +144,62 @@ export class ChatUseCase {
     })
   }
 
-  /** 文件上传 */
-  /** 文件上传 */
+  // ============================================================
+  // ⭐ 新增：文件上传（流式版）
+  //   与 sendStream 语义一致：立即返回 HttpRequest，
+  //   内容通过 onRefresh 回调逐步呈现
+  // ============================================================
+  sendFilesStream(opt: SendFilesStreamOptions): http.HttpRequest {
+    const startMs = DateUtil.nowMs()
+    opt.assistantMsg.thinkingDone = true
+
+    return this.repo.uploadFilesStream(opt.sessionId, opt.text, opt.files, {
+      onChunk: (content: string) => {
+        // ⭐ 图片场景：后端会先发 {"type":"image","image_base64":"..."}，
+        //   repo 层已经解析成 content，或调用 onImage 回调单独处理
+        opt.assistantMsg.content += content
+        opt.onRefresh()
+      },
+      onImage: (base64: string) => {
+        // 图生图/文生图返回图片时走这里
+        opt.assistantMsg.imageBase64 = this.toDataUri(base64)
+        opt.onRefresh()
+      },
+      onFinish: () => {
+        opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
+        opt.assistantMsg.completed = true
+        opt.onRefresh()
+        opt.onFinish()
+      },
+      onError: (err: string) => {
+        opt.assistantMsg.content += `\n[请求失败: ${err}]`
+        opt.assistantMsg.completed = true
+        opt.onRefresh()
+        opt.onFinish()
+      }
+    })
+  }
+
+  // ⚠️ 旧的 sendFiles 保留，但标记为待废弃
+  /** @deprecated 改用 sendFilesStream */
   async sendFiles(sessionId: string, text: string, files: FileItem[]): Promise<ChatMessage> {
     const startMs = DateUtil.nowMs()
     const msg = ChatUseCase.createMessage('assistant', '')
     msg.thinkingDone = true
     try {
       const resp = await this.repo.uploadFiles(sessionId, text, files)
-
-      // ⭐ 核心修复：按响应类型分派处理
       if (resp.type === 'image') {
-        // ✅ 图生图返回：渲染图片
         msg.imageBase64 = this.toDataUri(resp.image_base64 || '')
         msg.content = resp.content ?? '[图片已生成]'
-      }
-      else if (resp.type === 'text') {
+      } else if (resp.type === 'text') {
         msg.content = resp.content ?? ''
-      }
-      else if (resp.type === 'multi') {
+      } else if (resp.type === 'multi') {
         const parts: string[] = []
         let imageHandled = false
         for (const item of resp.results ?? []) {
-          if (item.type === 'text') {
-            parts.push(item.content ?? '')
-          } else if (item.type === 'image') {
+          if (item.type === 'text') parts.push(item.content ?? '')
+          else if (item.type === 'image') {
             if (!imageHandled) {
-              // ⭐ 修复：multi 里也要把第一张图赋值给 msg.imageBase64
               msg.imageBase64 = this.toDataUri(item.image_base64 || '')
               imageHandled = true
             }
@@ -169,15 +207,11 @@ export class ChatUseCase {
           }
         }
         msg.content = parts.join('\n\n')
-      }
-      else if (resp.type === 'error') {
+      } else if (resp.type === 'error') {
         msg.content = resp.content ?? '[请求出错]'
-      }
-      else {
-        // 兜底：如果真的遇到未知类型，至少把 content 显示出来
+      } else {
         msg.content = resp.content ?? '[未知响应类型]'
       }
-
       msg.duration = DateUtil.elapsedSeconds(startMs)
       msg.completed = true
     } catch (e) {
@@ -187,7 +221,7 @@ export class ChatUseCase {
     return msg
   }
 
-  /** OCR */
+  /** OCR（保持） */
   async ocr(files: FileItem[]): Promise<ChatMessage> {
     const msg = ChatUseCase.createMessage('assistant', '')
     msg.thinkingDone = true
