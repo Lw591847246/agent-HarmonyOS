@@ -1,6 +1,7 @@
 import http from '@ohos.net.http'
 import pasteboard from '@ohos.pasteboard'
 import { promptAction } from '@kit.ArkUI'
+import { common } from '@kit.AbilityKit'   // ⭐ 新增
 
 import { ChatViewModel } from '../../features/chat/ChatViewModel'
 import { ConversationViewModel } from '../../features/conversation/ConversationViewModel'
@@ -20,7 +21,7 @@ import { SessionManager } from '../../core/session/SessionManager'
 // ⭐ 阶段 3 新增
 import { RouteNames } from '../../core/router/RouteNames'
 import { ImageEditorParams, ImageEditorResult, IMAGE_EDITOR_DONE_EVENT } from '../imageeditor/models/ImageEditorParams'
-import { ImageActionDialog } from '../../common/ui/ImageActionDialog'      // ⭐ 本次新增
+import { ImageActionDialog } from '../../common/ui/ImageActionDialog'
 
 
 /** ⭐ 一个"进行中的对话回合"：用户消息 + 助手占位（两者都持有引用） */
@@ -53,10 +54,11 @@ export struct ChatPage {
 
   private chatVM: ChatViewModel = new ChatViewModel(getContext(this))
   private conversationVM = new ConversationViewModel()
-  private fileVM = new FileViewModel()
+  // ⭐ 构造时注入 ctx（cameraPicker 需要）
+  private fileVM: FileViewModel = new FileViewModel(getContext(this) as common.Context)
   private authVM = new AuthViewModel()
-  private editorListenerBound: boolean = false //图片编辑器结果监听标记
-  private imageActionDialog: CustomDialogController | null = null //图片处理弹窗控制器
+  private editorListenerBound: boolean = false
+  private imageActionDialog: CustomDialogController | null = null
 
   // ⭐ 每个会话正在生成的"对话回合"（key = sessionId）
   private pendingTurns: Map<string, PendingTurn> = new Map()
@@ -68,7 +70,7 @@ export struct ChatPage {
   @State private currentIsPending: boolean = false
   // ⭐ 正在加载历史的会话 id（非空 = 显示加载遮罩）
   @State private switchingSessionId: string = ''
-  // ⭐ 超时时长：10 分钟
+  // ⭐ 超时时长：30 分钟
   private static readonly REQUEST_TIMEOUT_MS = 30 * 60 * 1000
 
 
@@ -126,10 +128,6 @@ export struct ChatPage {
     }
   }
 
-  /**
-   * ⭐ 页面重新可见：不再销毁后台请求，不再把未完成消息标记为中断。
-   * 只根据 pendingTurns 恢复 UI 状态，切回会话时由 selectConversation 恢复内容。
-   */
   onPageShow(): void {
     Logger.i('[ChatPage] onPageShow：根据 pendingTurns 恢复 UI 状态')
     const turn = this.pendingTurns.get(this.currentSessionId)
@@ -142,14 +140,9 @@ export struct ChatPage {
     }
   }
 
-  /**
-   * ⭐ 页面隐藏（后台）：不销毁请求、不清 pendingTurns，让请求继续运行。
-   * UI 状态的恢复交给 onPageShow / selectConversation。
-   */
   onPageHide(): void {
     Logger.i('[ChatPage] onPageHide：进入后台，保留请求与 pending 状态')
     this.setGestureBackEnabled(true)
-    // 注意：这里不做任何清理，避免杀掉正在流式输出的请求。
   }
 
   async init(): Promise<void> {
@@ -190,13 +183,6 @@ export struct ChatPage {
     await this.loadConversations()
   }
 
-  /**
-   * ⭐ 切换会话（关键方法）
-   * - await 之后二次校验，防止过期返回覆盖
-   * - 永远用新数组赋值，强制 @State 刷新
-   * - 如果该会话有 pending 回合，把 user + assistant 都补回列表
-   * - 恢复 loading 与 currentIsPending 状态
-   */
   async selectConversation(sessionId: string): Promise<void> {
     Logger.i(`[ChatPage] selectConversation 入参 sessionId=${sessionId}`)
 
@@ -204,13 +190,11 @@ export struct ChatPage {
     this.chatVM.setSessionId(sessionId)
     this.sidebarVisible = false
 
-    // ⭐ 立即点亮遮罩（同一 tick 内就会渲染一帧，用户马上看到）
     this.switchingSessionId = sessionId
 
     try {
       const remote = await this.conversationVM.loadHistory(sessionId)
 
-      // ⭐ await 之后二次校验，防止过期请求覆盖
       if (this.currentSessionId !== sessionId) {
         Logger.e(`[ChatPage] selectConversation 过期返回，丢弃: ${sessionId}`)
         return
@@ -242,7 +226,6 @@ export struct ChatPage {
     } catch (e) {
       Logger.e(`[ChatPage] loadHistory 失败: ${(e as Error).message}`)
     } finally {
-      // ⭐ 只有当前遮罩还属于"我"才关闭，避免快速连点时旧请求把新遮罩关掉
       if (this.switchingSessionId === sessionId) {
         this.switchingSessionId = ''
       }
@@ -268,7 +251,6 @@ export struct ChatPage {
     }
     if (text.length === 0) return
 
-    // ⭐ 快照当前 sessionId
     const requestSessionId = this.currentSessionId
 
     const userMsg = this.chatVM.createUserMessage(text)
@@ -276,7 +258,6 @@ export struct ChatPage {
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
 
-    // ⭐ 标记开始（user + assistant 一起缓存）
     this._startRequest(requestSessionId, userMsg, assistantMsg)
 
     this.inputText = ''
@@ -290,7 +271,6 @@ export struct ChatPage {
         sessionId: requestSessionId,
         assistantMsg,
         onRefresh: () => {
-          // 只有用户还在这个会话时才刷新 UI
           if (this.currentSessionId === requestSessionId) {
             if (this.messages.indexOf(assistantMsg) < 0) {
               this.messages.push(assistantMsg)
@@ -310,7 +290,6 @@ export struct ChatPage {
           this.loadConversations()
 
           if (this.currentSessionId === requestSessionId) {
-            // 用短轮询代替固定 800ms，后端落库快就快刷新
             let tries = 0
             const poll = async () => {
               if (this.currentSessionId !== requestSessionId) return
@@ -338,7 +317,6 @@ export struct ChatPage {
     Logger.i(`[ChatPage] sendAttachments 发送前 currentSessionId=${this.currentSessionId}`)
     if (this.isLoadingNow()) return
 
-    // ⭐ 快照当前 sessionId
     const requestSessionId = this.currentSessionId
 
     const images = this.attachedImages
@@ -368,7 +346,6 @@ export struct ChatPage {
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
 
-    // ⭐ 标记开始
     this._startRequest(requestSessionId, userMsg, assistantMsg)
 
     this.inputText = ''
@@ -431,7 +408,6 @@ export struct ChatPage {
     this.messages.push(assistantMsg)
     this.messages = [...this.messages]
 
-    // ⭐ 标记开始
     this._startRequest(requestSessionId, newUserMsg, assistantMsg)
 
     this.loadingSessionId = requestSessionId
@@ -500,14 +476,20 @@ export struct ChatPage {
     const files = await this.fileVM.pickImages(3)
     if (!files.length) return
 
-    // ⭐ 单选时给用户"编辑 / 直接使用"的选择
     if (files.length === 1) {
       this.askEditOrUse(files[0])
       return
     }
 
-    // 多选直接加
     this.appendImages(files)
+  }
+
+  // ⭐ 新增：拍照入口
+  async onTakePhoto(): Promise<void> {
+    const file = await this.fileVM.capturePhoto()
+    if (!file) return
+    // 复用图库的"编辑 / 直接使用"对话框
+    this.askEditOrUse(file)
   }
 
   /** ⭐ 弹自定义对话框：编辑后上传 / 直接使用 */
@@ -527,7 +509,7 @@ export struct ChatPage {
       }),
       autoCancel: true,
       alignment: DialogAlignment.Center,
-      customStyle: true    // ⭐ 关闭默认白色卡片，改用 dialog 自己的白底圆角
+      customStyle: true
     })
     this.imageActionDialog.open()
   }
@@ -551,14 +533,12 @@ export struct ChatPage {
     this.attachedFiles = await this.fileVM.pickDocuments(3)
   }
 
-  /** ⭐ 阶段 1 改动：不再通过父组件回调，直接通知 SessionManager */
   async logout(): Promise<void> {
     try {
-      await this.authVM.logout()   // 通知后端注销（失败也不阻塞）
+      await this.authVM.logout()
     } catch (e) {
       Logger.e(`[ChatPage] 后端登出失败: ${(e as Error).message}`)
     }
-    // ⭐ 无论后端是否成功，本地一定清理；Index 会自动切到 LoginPage
     SessionManager.logout()
   }
 
@@ -570,16 +550,13 @@ export struct ChatPage {
 
   scrollToBottom(): void { this.scroller.scrollEdge(Edge.Bottom) }
 
-  /** ⭐ 标记会话开始一个请求（缓存 user + assistant 整个回合） */
   private _startRequest(sessionId: string, userMsg: ChatMessage, assistantMsg: ChatMessage): void {
     Logger.i(`[ChatPage] _startRequest sessionId=${sessionId}`)
     this.pendingTurns.set(sessionId, { user: userMsg, assistant: assistantMsg })
 
-    // 清旧超时（如果存在）
     const old = this.pendingTimeouts.get(sessionId)
     if (old !== undefined) clearTimeout(old)
 
-    // 设置超时兜底
     const timer = setTimeout(() => {
       Logger.e(`[ChatPage] 请求超时: ${sessionId}`)
       this._finishRequest(sessionId)
@@ -594,7 +571,6 @@ export struct ChatPage {
     }
   }
 
-  /** ⭐ 标记会话请求结束（成功/失败/超时） */
   private _finishRequest(sessionId: string): void {
     Logger.i(`[ChatPage] _finishRequest sessionId=${sessionId}`)
     this.pendingTurns.delete(sessionId)
@@ -610,28 +586,20 @@ export struct ChatPage {
     }
   }
 
-  /**
-   * ⭐ session_id 兜底变化的统一处理
-   * - 迁移 pendingTurns / pendingTimeouts 的 key
-   * - 只有用户仍停在该会话时才更新 currentSessionId（避免污染其他会话）
-   */
   private _handleSessionIdChange(sid: string, requestSessionId: string): void {
     if (sid === requestSessionId) return
 
-    // 迁移 pending 回合
     const turn = this.pendingTurns.get(requestSessionId)
     if (turn) {
       this.pendingTurns.delete(requestSessionId)
       this.pendingTurns.set(sid, turn)
     }
-    // 迁移超时定时器
     const timer = this.pendingTimeouts.get(requestSessionId)
     if (timer !== undefined) {
       this.pendingTimeouts.delete(requestSessionId)
       this.pendingTimeouts.set(sid, timer)
     }
 
-    // ⭐ 关键：只有当用户此刻真的还停在这个会话里，才更新 currentSessionId
     if (this.currentSessionId === requestSessionId) {
       this.currentSessionId = sid
       this.chatVM.setSessionId(sid)
@@ -642,13 +610,11 @@ export struct ChatPage {
     Logger.i(`[ChatPage] session_id 兜底更新为: ${sid}，当前 UI 会话=${this.currentSessionId}`)
   }
 
-  /** ⭐ 重新从服务器拉取指定会话的消息（同样补 pending 回合，且不覆盖已有内容） */
   private async _reloadMessages(sessionId: string): Promise<void> {
     try {
       const remote = await this.conversationVM.loadHistory(sessionId)
-      if (this.currentSessionId !== sessionId) return     // ⭐ 二次校验
+      if (this.currentSessionId !== sessionId) return
 
-      // ⭐ 空数据保护：如果服务端返回空但本地已有内容，不覆盖，避免闪烁
       if ((!remote || remote.length === 0) && this.messages.length > 0) {
         Logger.e(`[ChatPage] _reloadMessages 服务端返回空，保留本地消息`)
         return
@@ -662,7 +628,7 @@ export struct ChatPage {
         if (!hasUser) list.push(turn.user)
         if (list.indexOf(turn.assistant) < 0) list.push(turn.assistant)
       }
-      this.messages = list                                 // ⭐ 新数组
+      this.messages = list
       this.currentIsPending = turn !== undefined
       this.scrollToBottom()
     } catch (e) {
@@ -738,7 +704,6 @@ export struct ChatPage {
             .alignItems(HorizontalAlign.Center)
           }
 
-          // ⭐ 切换会话时的加载遮罩
           if (this.switchingSessionId.length > 0) {
             Column({ space: 10 }) {
               LoadingProgress()
@@ -754,7 +719,7 @@ export struct ChatPage {
             .height('100%')
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
-            .backgroundColor('#fafafaee')   // 半透明，避免露出上一会话的残留内容
+            .backgroundColor('#fafafaee')
           }
         }
         .layoutWeight(1)
@@ -783,7 +748,6 @@ export struct ChatPage {
                         .objectFit(ImageFit.Cover)
                         .backgroundColor('#eee')
                         .onClick(() => {
-                          // ⭐ 单击小图 → 全屏预览（复用 previewUrl）
                           this.previewUrl = f.uri
                         })
 
@@ -844,7 +808,8 @@ export struct ChatPage {
           onSend: () => this.handleSubmit(),
           onToggleAddMenu: () => { this.showAddMenu = !this.showAddMenu },
           onVoice: () => promptAction.openToast({ message: '语音开发中' }),
-          onCamera: () => { this.showAddMenu = false; this.onCameraOrAlbum() },
+          // ⭐ 拍照走新方法
+          onCamera: () => { this.showAddMenu = false; this.onTakePhoto() },
           onAlbum: () => { this.showAddMenu = false; this.onCameraOrAlbum() },
           onFile: () => { this.showAddMenu = false; this.onPickFile() }
         })
