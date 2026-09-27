@@ -17,6 +17,10 @@ import { Logger } from '../../common/logger/Logger'
 import { ImagePreview } from '../../common/ui/ImagePreview'
 import { window } from '@kit.ArkUI'
 import { SessionManager } from '../../core/session/SessionManager'
+// ⭐ 阶段 3 新增
+import { RouteNames } from '../../core/router/RouteNames'
+import { ImageEditorParams, ImageEditorResult, IMAGE_EDITOR_DONE_EVENT } from '../imageeditor/models/ImageEditorParams'
+import { ImageActionDialog } from '../../common/ui/ImageActionDialog'      // ⭐ 本次新增
 
 
 /** ⭐ 一个"进行中的对话回合"：用户消息 + 助手占位（两者都持有引用） */
@@ -51,7 +55,8 @@ export struct ChatPage {
   private conversationVM = new ConversationViewModel()
   private fileVM = new FileViewModel()
   private authVM = new AuthViewModel()
-
+  private editorListenerBound: boolean = false //图片编辑器结果监听标记
+  private imageActionDialog: CustomDialogController | null = null //图片处理弹窗控制器
 
   // ⭐ 每个会话正在生成的"对话回合"（key = sessionId）
   private pendingTurns: Map<string, PendingTurn> = new Map()
@@ -64,7 +69,7 @@ export struct ChatPage {
   // ⭐ 正在加载历史的会话 id（非空 = 显示加载遮罩）
   @State private switchingSessionId: string = ''
   // ⭐ 超时时长：10 分钟
-  private static readonly REQUEST_TIMEOUT_MS = 10 * 60 * 1000
+  private static readonly REQUEST_TIMEOUT_MS = 30 * 60 * 1000
 
 
   private isLoadingNow(): boolean {
@@ -77,7 +82,36 @@ export struct ChatPage {
       || this.attachedImages.length > 0
   }
 
-  aboutToAppear(): void { this.init() }
+  aboutToAppear(): void {
+    this.bindEditorListener()
+    this.init()
+  }
+
+  aboutToDisappear(): void {
+    this.unbindEditorListener()
+  }
+
+  private unbindEditorListener(): void {
+    if (!this.editorListenerBound) return
+    getContext(this).eventHub.off(IMAGE_EDITOR_DONE_EVENT, this.onImageEdited)
+    this.editorListenerBound = false
+  }
+
+  /** ⭐ 监听图片编辑器完成事件 */
+  private bindEditorListener(): void {
+    if (this.editorListenerBound) return
+    getContext(this).eventHub.on(IMAGE_EDITOR_DONE_EVENT, this.onImageEdited)
+    this.editorListenerBound = true
+  }
+
+  /** ⭐ 编辑完成：把新图加入附件条 */
+  private onImageEdited = (result: ImageEditorResult): void => {
+    Logger.i(`[ChatPage] 收到编辑结果 uri=${result.uri}`)
+    const item: FileItem = { name: result.name, uri: result.uri }
+    this.attachedImages = [...this.attachedImages, item]
+    promptAction.openToast({ message: '已添加到待发送' })
+  }
+
 
   onPreviewUrlChange(): void {
     this.setGestureBackEnabled(this.previewUrl.length === 0)
@@ -466,6 +500,40 @@ export struct ChatPage {
     const files = await this.fileVM.pickImages(3)
     if (!files.length) return
 
+    // ⭐ 单选时给用户"编辑 / 直接使用"的选择
+    if (files.length === 1) {
+      this.askEditOrUse(files[0])
+      return
+    }
+
+    // 多选直接加
+    this.appendImages(files)
+  }
+
+  /** ⭐ 弹自定义对话框：编辑后上传 / 直接使用 */
+  private askEditOrUse(file: FileItem): void {
+    this.imageActionDialog = new CustomDialogController({
+      builder: ImageActionDialog({
+        fileName: file.name,
+        onEdit: () => {
+          this.navStack.pushPath({
+            name: RouteNames.IMAGE_EDITOR,
+            param: { uri: file.uri, name: file.name } as ImageEditorParams
+          })
+        },
+        onUse: () => {
+          this.appendImages([file])
+        }
+      }),
+      autoCancel: true,
+      alignment: DialogAlignment.Center,
+      customStyle: true    // ⭐ 关闭默认白色卡片，改用 dialog 自己的白底圆角
+    })
+    this.imageActionDialog.open()
+  }
+
+  /** ⭐ 统一的"加入附件条"逻辑（带去重 + 上限） */
+  private appendImages(files: FileItem[]): void {
     const exist = new Set(this.attachedImages.map(f => f.uri))
     const add = files.filter(f => !exist.has(f.uri))
 
@@ -714,6 +782,10 @@ export struct ChatPage {
                         .borderRadius(6)
                         .objectFit(ImageFit.Cover)
                         .backgroundColor('#eee')
+                        .onClick(() => {
+                          // ⭐ 单击小图 → 全屏预览（复用 previewUrl）
+                          this.previewUrl = f.uri
+                        })
 
                       Text(f.name)
                         .fontSize(10)

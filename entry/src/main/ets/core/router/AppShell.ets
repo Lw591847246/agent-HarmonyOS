@@ -1,4 +1,7 @@
 import { ChatPage } from '../../features/chat/ChatPage'
+import { RouteNames } from './RouteNames'
+import { ImageEditorPage } from '../../features/imageeditor/ImageEditorPage'
+import { ImageEditorParams } from '../../features/imageeditor/models/ImageEditorParams'
 
 @Component
 export struct AppShell {
@@ -17,13 +20,9 @@ export struct AppShell {
 
   @Builder
   pageMap(name: string, param: object) {
-    // ⚠️ @Builder 里只能写 UI
-    // 用 if/else 结构，把未注册的路由显示成醒目提示
-    if (name === '__never__') {
-      // 这个分支永远不会命中，纯占位
-      Column()
+    if (name === RouteNames.IMAGE_EDITOR) {
+      ImageEditorPage({ params: param as ImageEditorParams })
     } else {
-      // 未注册的路由显示错误提示（调试友好）
       Column() {
         Text(`未注册路由: ${name}`)
           .fontSize(16).fontColor('#e74c3c')

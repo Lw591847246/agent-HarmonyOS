@@ -57,6 +57,7 @@ export struct ImagePreview {
     }
 
     // 情况 2：本地文件
+    // 情况 2：本地文件
     if (this.url.startsWith('file://') || this.url.startsWith('/')) {
       try {
         const path = this.url.replace('file://', '')
@@ -71,7 +72,10 @@ export struct ImagePreview {
           fs.closeSync(file)
         }
       } catch (e) {
-        promptAction.openToast({ message: '读取失败: ' + (e as Error).message })
+        // ⭐ 关键：媒体库 uri（file://media/Photo/...）不能用 fs.openSync 打开
+        // 交给 Image 组件自己的通道去加载
+        this.imageSrc = this.url
+        this.imageBytes = null   // 缓存失效，保存/分享时再尝试
       }
       this.isLoading = false
       return

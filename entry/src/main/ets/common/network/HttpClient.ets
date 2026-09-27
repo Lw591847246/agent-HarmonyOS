@@ -54,7 +54,7 @@ export class HttpClient {
         header: HttpInterceptor.buildJsonHeader(),
         extraData: body ? JSON.stringify(body) : undefined,
         connectTimeout: AppConfig.CONNECT_TIMEOUT,
-        readTimeout: 120000
+        readTimeout: AppConfig.READ_TIMEOUT
       })
       const text = HttpInterceptor.handleResponse(resp)
       try {
@@ -77,7 +77,7 @@ export class HttpClient {
         method: http.RequestMethod.GET,
         header: HttpInterceptor.buildTokenHeader(),
         connectTimeout: AppConfig.CONNECT_TIMEOUT,
-        readTimeout: 30000
+        readTimeout: AppConfig.READ_TIMEOUT
       })
       const text = HttpInterceptor.handleResponse(resp)
       try {
