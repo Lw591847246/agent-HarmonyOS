@@ -1,9 +1,9 @@
 import { AuthViewModel } from '../../features/auth/AuthViewModel'
 import { RegisterParams } from '../../domain/repositories/IUserRepository'
+import { SessionManager } from '../../core/session/SessionManager'
 
 @Component
 export struct LoginPage {
-  onLoginSuccess: () => void = () => {}
   private username: string = ''
   private password: string = ''
   private realName: string = ''
@@ -102,8 +102,17 @@ export struct LoginPage {
         }
       } else {
         const r = await this.vm.login(this.username.trim(), this.password)
-        if (r.ok) this.onLoginSuccess()
-        else this.message = r.msg || '登录失败'
+        if (r.ok) {
+          // ⭐ 关键改动：登录成功后广播会话变化
+          // token 已由 AuthViewModel 存到 TokenStore
+          SessionManager.notifyLogin({
+            userId: 0,
+            username: this.username.trim(),
+          })
+          // ⭐ 不需要跳转，Index 里的 onChange 会自动切到 ChatPage
+        } else {
+          this.message = r.msg || '登录失败'
+        }
       }
     } finally {
       this.loading = false

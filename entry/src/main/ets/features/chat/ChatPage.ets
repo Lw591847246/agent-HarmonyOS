@@ -16,23 +16,33 @@ import { MessageActionType } from '../../common/ui/MessageAction'
 import { Logger } from '../../common/logger/Logger'
 import { ImagePreview } from '../../common/ui/ImagePreview'
 import { window } from '@kit.ArkUI'
+import { SessionManager } from '../../core/session/SessionManager'
 
 
-@Entry
+/** ⭐ 一个"进行中的对话回合"：用户消息 + 助手占位（两者都持有引用） */
+interface PendingTurn {
+  user: ChatMessage
+  assistant: ChatMessage
+}
+
+
 @Component
 export struct ChatPage {
-  onLogout: () => void = () => {}
+
+  // ⭐ 拿到全局路由栈（AppShell 里 @Provide 的）
+  @Consume('navStack') navStack: NavPathStack
+
   @State messages: ChatMessage[] = []
   @State conversations: Conversation[] = []
   @State inputText: string = ''
   @State loadingSessionId: string = ''
   @State currentSessionId: string = ''
   @State sidebarVisible: boolean = false
-  @State attachedFiles: FileItem[] = []        // 文档附件
-  @State attachedImages: FileItem[] = []       // 图片附件（新增）
+  @State attachedFiles: FileItem[] = []
+  @State attachedImages: FileItem[] = []
   @State showAddMenu: boolean = false
   @Watch('onPreviewUrlChange')
-  @State previewUrl: string = ''               // 空串 = 不显示预览
+  @State previewUrl: string = ''
 
   private scroller: Scroller = new Scroller()
   private currentRequest: http.HttpRequest | null = null
@@ -41,6 +51,21 @@ export struct ChatPage {
   private conversationVM = new ConversationViewModel()
   private fileVM = new FileViewModel()
   private authVM = new AuthViewModel()
+
+
+  // ⭐ 每个会话正在生成的"对话回合"（key = sessionId）
+  private pendingTurns: Map<string, PendingTurn> = new Map()
+
+  // ⭐ 每个会话的超时定时器
+  private pendingTimeouts: Map<string, number> = new Map()
+
+  // ⭐ 当前会话是否有未完成的请求（用于 UI 响应式）
+  @State private currentIsPending: boolean = false
+  // ⭐ 正在加载历史的会话 id（非空 = 显示加载遮罩）
+  @State private switchingSessionId: string = ''
+  // ⭐ 超时时长：10 分钟
+  private static readonly REQUEST_TIMEOUT_MS = 10 * 60 * 1000
+
 
   private isLoadingNow(): boolean {
     return this.loadingSessionId.length > 0 && this.loadingSessionId === this.currentSessionId
@@ -54,8 +79,6 @@ export struct ChatPage {
 
   aboutToAppear(): void { this.init() }
 
-
-  /** previewUrl 变化时切换系统返回手势 */
   onPreviewUrlChange(): void {
     this.setGestureBackEnabled(this.previewUrl.length === 0)
   }
@@ -69,50 +92,30 @@ export struct ChatPage {
     }
   }
 
-  /** 页面回到前台时触发。App 从后台切回、从其他页返回时都会调用 */
+  /**
+   * ⭐ 页面重新可见：不再销毁后台请求，不再把未完成消息标记为中断。
+   * 只根据 pendingTurns 恢复 UI 状态，切回会话时由 selectConversation 恢复内容。
+   */
   onPageShow(): void {
-    Logger.i('[ChatPage] onPageShow：清空 loading，避免后台挂起的请求卡死状态')
-
-    // 关键：清空 loading，让重新生成、提交等按钮恢复可点
-    this.loadingSessionId = ''
-
-    // 释放可能还挂着的请求
-    if (this.currentRequest) {
-      try {
-        this.currentRequest.destroy()
-      } catch (e) {
-        Logger.e('destroy 请求失败: ' + (e as Error).message)
-      }
-      this.currentRequest = null
+    Logger.i('[ChatPage] onPageShow：根据 pendingTurns 恢复 UI 状态')
+    const turn = this.pendingTurns.get(this.currentSessionId)
+    if (turn) {
+      this.currentIsPending = true
+      this.loadingSessionId = this.currentSessionId
+    } else {
+      this.currentIsPending = false
+      this.loadingSessionId = ''
     }
-
-    // 可选：把消息列表里还没完成的消息标记为完成，避免 UI 一直显示"正在生成"
-    for (let i = 0; i < this.messages.length; i++) {
-      const m = this.messages[i]
-      if (!m.completed) {
-        m.completed = true
-        if (m.content.length === 0) {
-          m.content = '[请求已中断]'
-        }
-      }
-    }
-    this.messages = [...this.messages]
   }
 
-  /** 页面进入后台时触发 */
+  /**
+   * ⭐ 页面隐藏（后台）：不销毁请求、不清 pendingTurns，让请求继续运行。
+   * UI 状态的恢复交给 onPageShow / selectConversation。
+   */
   onPageHide(): void {
-    Logger.i('[ChatPage] onPageHide：进入后台，标记未完成消息并清理请求')
-    // ← 新增这行，防止退出时手势还处于禁用状态
+    Logger.i('[ChatPage] onPageHide：进入后台，保留请求与 pending 状态')
     this.setGestureBackEnabled(true)
-    if (this.currentRequest) {
-      try {
-        this.currentRequest.destroy()
-      } catch (e) {
-        Logger.e('onPageHide destroy 失败: ' + (e as Error).message)
-      }
-      this.currentRequest = null
-    }
-    this.loadingSessionId = ''
+    // 注意：这里不做任何清理，避免杀掉正在流式输出的请求。
   }
 
   async init(): Promise<void> {
@@ -120,7 +123,6 @@ export struct ChatPage {
     if (this.conversations.length > 0) {
       await this.selectConversation(this.conversations[0].sessionId)
     } else {
-      // ⭐ 关键修复：初始化时没有会话，强制创建，不走 newConversation 的保护逻辑
       const sid = await this.conversationVM.createNew()
       if (sid) {
         this.currentSessionId = sid
@@ -135,7 +137,6 @@ export struct ChatPage {
   }
 
   async newConversation(force: boolean = false): Promise<void> {
-    // ⭐ 只有用户主动点"+"时才做"已在新对话中"的保护
     if (!force && this.messages.length === 0) {
       promptAction.openToast({
         message: '已在新对话中',
@@ -145,26 +146,73 @@ export struct ChatPage {
       })
       return
     }
-
     const sid = await this.conversationVM.createNew()
     if (!sid) return
     this.currentSessionId = sid
     this.messages = []
     this.sidebarVisible = false
+    this.currentIsPending = false
+    this.loadingSessionId = ''
     await this.loadConversations()
   }
 
+  /**
+   * ⭐ 切换会话（关键方法）
+   * - await 之后二次校验，防止过期返回覆盖
+   * - 永远用新数组赋值，强制 @State 刷新
+   * - 如果该会话有 pending 回合，把 user + assistant 都补回列表
+   * - 恢复 loading 与 currentIsPending 状态
+   */
   async selectConversation(sessionId: string): Promise<void> {
     Logger.i(`[ChatPage] selectConversation 入参 sessionId=${sessionId}`)
-    this.loadingSessionId = ''
+
     this.currentSessionId = sessionId
-
-    // ⭐ 关键：同步给 ChatViewModel，避免它内部缓存还是旧值
     this.chatVM.setSessionId(sessionId)
-
     this.sidebarVisible = false
-    this.messages = await this.conversationVM.loadHistory(sessionId)
-    this.scrollToBottom()
+
+    // ⭐ 立即点亮遮罩（同一 tick 内就会渲染一帧，用户马上看到）
+    this.switchingSessionId = sessionId
+
+    try {
+      const remote = await this.conversationVM.loadHistory(sessionId)
+
+      // ⭐ await 之后二次校验，防止过期请求覆盖
+      if (this.currentSessionId !== sessionId) {
+        Logger.e(`[ChatPage] selectConversation 过期返回，丢弃: ${sessionId}`)
+        return
+      }
+
+      const list: ChatMessage[] = remote ? [...remote] : []
+
+      const turn = this.pendingTurns.get(sessionId)
+      if (turn) {
+        const hasUser = list.some((m: ChatMessage) =>
+        m.role === turn.user.role && m.content === turn.user.content)
+        if (!hasUser) {
+          list.push(turn.user)
+          Logger.i(`[ChatPage] ${sessionId} 补回本地 user 消息`)
+        }
+        if (list.indexOf(turn.assistant) < 0) {
+          list.push(turn.assistant)
+          Logger.i(`[ChatPage] ${sessionId} 补回本地 assistant 占位`)
+        }
+        this.currentIsPending = true
+        this.loadingSessionId = sessionId
+      } else {
+        this.currentIsPending = false
+        this.loadingSessionId = ''
+      }
+
+      this.messages = list
+      this.scrollToBottom()
+    } catch (e) {
+      Logger.e(`[ChatPage] loadHistory 失败: ${(e as Error).message}`)
+    } finally {
+      // ⭐ 只有当前遮罩还属于"我"才关闭，避免快速连点时旧请求把新遮罩关掉
+      if (this.switchingSessionId === sessionId) {
+        this.switchingSessionId = ''
+      }
+    }
   }
 
   handleSubmit(): void {
@@ -176,71 +224,88 @@ export struct ChatPage {
     this.send()
   }
 
-  // ============================================================
-  // 发送总入口
-  //   - 有图片 / 文档 → sendAttachments（合并走 /process-file）
-  //   - 纯文本        → sendStream
-  // ============================================================
   async send(): Promise<void> {
     const text = this.inputText.trim()
     if (this.isLoadingNow()) return
 
-    // 有附件 → 走 sendAttachments
     if (this.attachedImages.length > 0 || this.attachedFiles.length > 0) {
       this.sendAttachments(text)
       return
     }
-
     if (text.length === 0) return
 
-    // ---- 纯文本发送 ----
-    this.messages.push(this.chatVM.createUserMessage(text))
+    // ⭐ 快照当前 sessionId
+    const requestSessionId = this.currentSessionId
+
+    const userMsg = this.chatVM.createUserMessage(text)
+    this.messages.push(userMsg)
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
 
+    // ⭐ 标记开始（user + assistant 一起缓存）
+    this._startRequest(requestSessionId, userMsg, assistantMsg)
+
     this.inputText = ''
-    this.loadingSessionId = this.currentSessionId || 'pending'
+    this.loadingSessionId = requestSessionId
     this.messages = [...this.messages]
     this.scrollToBottom()
 
     try {
-      // ⭐ await 拿到 HttpRequest
       this.currentRequest = await this.chatVM.sendStream({
         text,
-        sessionId: this.currentSessionId,
+        sessionId: requestSessionId,
         assistantMsg,
-        onRefresh: () => { this.messages = [...this.messages] },
-        onScroll: () => this.scrollToBottom(),
+        onRefresh: () => {
+          // 只有用户还在这个会话时才刷新 UI
+          if (this.currentSessionId === requestSessionId) {
+            if (this.messages.indexOf(assistantMsg) < 0) {
+              this.messages.push(assistantMsg)
+            }
+            this.messages = [...this.messages]
+            this.scrollToBottom()
+          }
+        },
+        onScroll: () => {
+          if (this.currentSessionId === requestSessionId) {
+            this.scrollToBottom()
+          }
+        },
         onFinish: () => {
           this.loadingSessionId = ''
+          this._finishRequest(requestSessionId)
           this.loadConversations()
+
+          if (this.currentSessionId === requestSessionId) {
+            // 用短轮询代替固定 800ms，后端落库快就快刷新
+            let tries = 0
+            const poll = async () => {
+              if (this.currentSessionId !== requestSessionId) return
+              if (tries++ >= 5) return
+              await this._reloadMessages(requestSessionId)
+              const last = this.messages[this.messages.length - 1]
+              if (last && last.completed) return
+              setTimeout(poll, 400)
+            }
+            setTimeout(poll, 400)
+          }
         },
-        // ⭐ session_id 兜底回调
         onSessionIdChange: (sid: string) => {
-          this.currentSessionId = sid
-          Logger.i(`[ChatPage] session_id 兜底更新为: ${sid}`)
+          this._handleSessionIdChange(sid, requestSessionId)
         }
       })
     } catch (e) {
       Logger.e('sendStream 失败: ' + (e as Error).message)
       this.loadingSessionId = ''
+      this._finishRequest(requestSessionId)
     }
   }
 
-  // ============================================================
-  // 统一发送附件（图片 + 文档），复用后端 /agent/v1/process-file
-  // 后端 FileService.process_files 会按扩展名自动分流处理
-  //
-  // 关于 text 的取值：
-  //   ① 用户填了提示词 → 原文传
-  //   ② 用户没填 + 有图片 → 传 "请提取图片中的文字"，
-  //      命中后端 _process_image 的 OCR 关键词分支
-  //   ③ 用户没填 + 只有文档 → 传空串，后端走"请概括"
-  // ============================================================
   async sendAttachments(text: string): Promise<void> {
     Logger.i(`[ChatPage] sendAttachments 发送前 currentSessionId=${this.currentSessionId}`)
-
     if (this.isLoadingNow()) return
+
+    // ⭐ 快照当前 sessionId
+    const requestSessionId = this.currentSessionId
 
     const images = this.attachedImages
     const docs = this.attachedFiles
@@ -264,36 +329,52 @@ export struct ChatPage {
       }
     }
 
-    this.messages.push(this.chatVM.createUserMessage(displayText, allFiles.map(f => f.name)))
-    // ⭐ 拿住引用，流式更新它
+    const userMsg = this.chatVM.createUserMessage(displayText, allFiles.map(f => f.name))
+    this.messages.push(userMsg)
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
+
+    // ⭐ 标记开始
+    this._startRequest(requestSessionId, userMsg, assistantMsg)
+
     this.inputText = ''
-    this.loadingSessionId = this.currentSessionId
+    this.loadingSessionId = requestSessionId
     this.messages = [...this.messages]
     this.scrollToBottom()
 
     try {
-      // ⭐ 改走流式：等待 HttpRequest 拿回来，配合 onRefresh 刷新 UI
       this.currentRequest = await this.chatVM.sendFilesStream(
-        this.currentSessionId,
+        requestSessionId,
         backendText,
         allFiles,
         assistantMsg,
         () => {
-          // 每收到一块就刷新 UI（打字机效果）
-          this.messages = [...this.messages]
-          this.scrollToBottom()
+          if (this.currentSessionId === requestSessionId) {
+            if (this.messages.indexOf(assistantMsg) < 0) {
+              this.messages.push(assistantMsg)
+            }
+            this.messages = [...this.messages]
+            this.scrollToBottom()
+          }
         },
         () => {
-          // 全部完成
           this.loadingSessionId = ''
+          this._finishRequest(requestSessionId)
           this.loadConversations()
+
+          if (this.currentSessionId === requestSessionId) {
+            setTimeout(() => {
+              if (this.currentSessionId === requestSessionId) {
+                this._reloadMessages(requestSessionId)
+              }
+            }, 800)
+          }
         },
       )
     } catch (e) {
       Logger.e('sendFilesStream 失败: ' + (e as Error).message)
       this.loadingSessionId = ''
+      this._finishRequest(requestSessionId)
       if (assistantMsg.content.length === 0) {
         assistantMsg.content = `[上传失败: ${(e as Error).message}]`
       }
@@ -302,40 +383,66 @@ export struct ChatPage {
     }
   }
 
-
   async regenerate(userMsg: ChatMessage): Promise<void> {
     Logger.i(`[ChatPage] regenerate 发送前 currentSessionId=${this.currentSessionId}`)
     if (this.isLoadingNow()) return
     const text = userMsg.content
     if (!text) return
 
-    this.messages.push(this.chatVM.createUserMessage(text, userMsg.files))
+    const requestSessionId = this.currentSessionId
+
+    const newUserMsg = this.chatVM.createUserMessage(text, userMsg.files)
+    this.messages.push(newUserMsg)
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
     this.messages = [...this.messages]
-    this.loadingSessionId = this.currentSessionId || 'pending'
+
+    // ⭐ 标记开始
+    this._startRequest(requestSessionId, newUserMsg, assistantMsg)
+
+    this.loadingSessionId = requestSessionId
     this.scrollToBottom()
 
     try {
-      // ⭐ await 拿到 HttpRequest
       this.currentRequest = await this.chatVM.sendStream({
         text,
-        sessionId: this.currentSessionId,
+        sessionId: requestSessionId,
         assistantMsg,
-        onRefresh: () => { this.messages = [...this.messages] },
-        onScroll: () => this.scrollToBottom(),
+        onRefresh: () => {
+          if (this.currentSessionId === requestSessionId) {
+            if (this.messages.indexOf(assistantMsg) < 0) {
+              this.messages.push(assistantMsg)
+            }
+            this.messages = [...this.messages]
+            this.scrollToBottom()
+          }
+        },
+        onScroll: () => {
+          if (this.currentSessionId === requestSessionId) {
+            this.scrollToBottom()
+          }
+        },
         onFinish: () => {
           this.loadingSessionId = ''
+          this._finishRequest(requestSessionId)
           this.loadConversations()
+
+          if (this.currentSessionId === requestSessionId) {
+            setTimeout(() => {
+              if (this.currentSessionId === requestSessionId) {
+                this._reloadMessages(requestSessionId)
+              }
+            }, 800)
+          }
         },
         onSessionIdChange: (sid: string) => {
-          this.currentSessionId = sid
-          Logger.i(`[ChatPage] regenerate session_id 兜底更新为: ${sid}`)
+          this._handleSessionIdChange(sid, requestSessionId)
         }
       })
     } catch (e) {
       Logger.e('regenerate sendStream 失败: ' + (e as Error).message)
       this.loadingSessionId = ''
+      this._finishRequest(requestSessionId)
     }
   }
 
@@ -355,18 +462,13 @@ export struct ChatPage {
     else if (type === MessageActionType.SHARE) promptAction.openToast({ message: '分享开发中' })
   }
 
-  // ============================================================
-  // 拍照 / 相册：只暂存，不立刻处理
-  // ============================================================
   async onCameraOrAlbum(): Promise<void> {
     const files = await this.fileVM.pickImages(3)
     if (!files.length) return
 
-    // 按 uri 去重（用户反复选同一张图时不重复添加）
     const exist = new Set(this.attachedImages.map(f => f.uri))
     const add = files.filter(f => !exist.has(f.uri))
 
-    // 总量上限 9 张
     const maxCount = 9
     const total = this.attachedImages.length + add.length
     if (total > maxCount) {
@@ -381,12 +483,17 @@ export struct ChatPage {
     this.attachedFiles = await this.fileVM.pickDocuments(3)
   }
 
+  /** ⭐ 阶段 1 改动：不再通过父组件回调，直接通知 SessionManager */
   async logout(): Promise<void> {
-    await this.authVM.logout()
-    this.onLogout()
+    try {
+      await this.authVM.logout()   // 通知后端注销（失败也不阻塞）
+    } catch (e) {
+      Logger.e(`[ChatPage] 后端登出失败: ${(e as Error).message}`)
+    }
+    // ⭐ 无论后端是否成功，本地一定清理；Index 会自动切到 LoginPage
+    SessionManager.logout()
   }
 
-  /** 删除单张已选图片 */
   private removeImageAt(index: number): void {
     const next = this.attachedImages.slice()
     next.splice(index, 1)
@@ -395,8 +502,107 @@ export struct ChatPage {
 
   scrollToBottom(): void { this.scroller.scrollEdge(Edge.Bottom) }
 
+  /** ⭐ 标记会话开始一个请求（缓存 user + assistant 整个回合） */
+  private _startRequest(sessionId: string, userMsg: ChatMessage, assistantMsg: ChatMessage): void {
+    Logger.i(`[ChatPage] _startRequest sessionId=${sessionId}`)
+    this.pendingTurns.set(sessionId, { user: userMsg, assistant: assistantMsg })
+
+    // 清旧超时（如果存在）
+    const old = this.pendingTimeouts.get(sessionId)
+    if (old !== undefined) clearTimeout(old)
+
+    // 设置超时兜底
+    const timer = setTimeout(() => {
+      Logger.e(`[ChatPage] 请求超时: ${sessionId}`)
+      this._finishRequest(sessionId)
+      if (this.currentSessionId === sessionId) {
+        this._reloadMessages(sessionId)
+      }
+    }, ChatPage.REQUEST_TIMEOUT_MS)
+    this.pendingTimeouts.set(sessionId, timer)
+
+    if (sessionId === this.currentSessionId) {
+      this.currentIsPending = true
+    }
+  }
+
+  /** ⭐ 标记会话请求结束（成功/失败/超时） */
+  private _finishRequest(sessionId: string): void {
+    Logger.i(`[ChatPage] _finishRequest sessionId=${sessionId}`)
+    this.pendingTurns.delete(sessionId)
+
+    const timer = this.pendingTimeouts.get(sessionId)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.pendingTimeouts.delete(sessionId)
+    }
+
+    if (sessionId === this.currentSessionId) {
+      this.currentIsPending = false
+    }
+  }
+
+  /**
+   * ⭐ session_id 兜底变化的统一处理
+   * - 迁移 pendingTurns / pendingTimeouts 的 key
+   * - 只有用户仍停在该会话时才更新 currentSessionId（避免污染其他会话）
+   */
+  private _handleSessionIdChange(sid: string, requestSessionId: string): void {
+    if (sid === requestSessionId) return
+
+    // 迁移 pending 回合
+    const turn = this.pendingTurns.get(requestSessionId)
+    if (turn) {
+      this.pendingTurns.delete(requestSessionId)
+      this.pendingTurns.set(sid, turn)
+    }
+    // 迁移超时定时器
+    const timer = this.pendingTimeouts.get(requestSessionId)
+    if (timer !== undefined) {
+      this.pendingTimeouts.delete(requestSessionId)
+      this.pendingTimeouts.set(sid, timer)
+    }
+
+    // ⭐ 关键：只有当用户此刻真的还停在这个会话里，才更新 currentSessionId
+    if (this.currentSessionId === requestSessionId) {
+      this.currentSessionId = sid
+      this.chatVM.setSessionId(sid)
+      if (this.loadingSessionId === requestSessionId) {
+        this.loadingSessionId = sid
+      }
+    }
+    Logger.i(`[ChatPage] session_id 兜底更新为: ${sid}，当前 UI 会话=${this.currentSessionId}`)
+  }
+
+  /** ⭐ 重新从服务器拉取指定会话的消息（同样补 pending 回合，且不覆盖已有内容） */
+  private async _reloadMessages(sessionId: string): Promise<void> {
+    try {
+      const remote = await this.conversationVM.loadHistory(sessionId)
+      if (this.currentSessionId !== sessionId) return     // ⭐ 二次校验
+
+      // ⭐ 空数据保护：如果服务端返回空但本地已有内容，不覆盖，避免闪烁
+      if ((!remote || remote.length === 0) && this.messages.length > 0) {
+        Logger.e(`[ChatPage] _reloadMessages 服务端返回空，保留本地消息`)
+        return
+      }
+
+      const list: ChatMessage[] = remote ? [...remote] : []
+      const turn = this.pendingTurns.get(sessionId)
+      if (turn) {
+        const hasUser = list.some((m: ChatMessage) =>
+        m.role === turn.user.role && m.content === turn.user.content)
+        if (!hasUser) list.push(turn.user)
+        if (list.indexOf(turn.assistant) < 0) list.push(turn.assistant)
+      }
+      this.messages = list                                 // ⭐ 新数组
+      this.currentIsPending = turn !== undefined
+      this.scrollToBottom()
+    } catch (e) {
+      Logger.e(`[ChatPage] 重新拉消息失败: ${(e as Error).message}`)
+    }
+  }
+
   build() {
-    // 根节点 Stack：Column 是页面主体，ImagePreview 是最顶层的覆盖层
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
         // 顶栏
@@ -405,7 +611,6 @@ export struct ChatPage {
             .onClick(() => { this.sidebarVisible = !this.sidebarVisible })
           Text('AI 智能助手').fontSize(17).fontWeight(FontWeight.Medium).layoutWeight(1)
 
-          // 右上角：新建会话（加号外圆圈）
           Button() {
             Text('+')
               .fontSize(18)
@@ -423,7 +628,7 @@ export struct ChatPage {
         .width('100%').height(56).backgroundColor(Color.White)
         .border({ width: { bottom: 1 }, color: '#eee' })
 
-        // 消息区（Stack 叠加：列表 + 空态欢迎语）
+        // 消息区
         Stack({ alignContent: Alignment.Center }) {
           List({ scroller: this.scroller }) {
             ForEach(this.messages, (msg: ChatMessage) => {
@@ -437,7 +642,6 @@ export struct ChatPage {
                 })
               }
             }, (msg: ChatMessage) => {
-              // ⭐ 用 thumbUrl 替代 imageThumbBase64
               const imgFlag = msg.imageBase64.length > 0 ? 'img'
                 : (msg.thumbUrl && msg.thumbUrl.length > 0 ? 'thumb' : 'no')
               return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}`
@@ -447,7 +651,6 @@ export struct ChatPage {
           .height('100%')
           .backgroundColor('#fafafa')
 
-          // 空态欢迎语：只在没有任何消息时显示
           if (this.messages.length === 0) {
             Column({ space: 12 }) {
               Text('你好，有什么我能帮你的吗？')
@@ -466,13 +669,30 @@ export struct ChatPage {
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
           }
+
+          // ⭐ 切换会话时的加载遮罩
+          if (this.switchingSessionId.length > 0) {
+            Column({ space: 10 }) {
+              LoadingProgress()
+                .width(36)
+                .height(36)
+                .color('#666666')
+
+              Text('正在加载会话…')
+                .fontSize(13)
+                .fontColor('#999999')
+            }
+            .width('100%')
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+            .backgroundColor('#fafafaee')   // 半透明，避免露出上一会话的残留内容
+          }
         }
         .layoutWeight(1)
         .width('100%')
 
-        // ============================================================
-        // 图片附件条：缩略图 + 文件名 + 单个删除 + 清空
-        // ============================================================
+        // 图片附件条
         if (this.attachedImages.length > 0) {
           Column() {
             Row() {
@@ -489,7 +709,6 @@ export struct ChatPage {
                 ForEach(this.attachedImages, (f: FileItem, idx: number) => {
                   Stack({ alignContent: Alignment.TopEnd }) {
                     Column({ space: 4 }) {
-                      // ⚠️ 若 FileItem 的图片路径字段不叫 uri，改成你的字段名
                       Image(f.uri)
                         .width(60).height(60)
                         .borderRadius(6)
@@ -508,7 +727,6 @@ export struct ChatPage {
                     .backgroundColor(Color.White)
                     .borderRadius(8)
 
-                    // 单个删除按钮
                     Text('✕')
                       .fontSize(11)
                       .fontColor(Color.White)
@@ -533,7 +751,7 @@ export struct ChatPage {
           .alignItems(HorizontalAlign.Start)
         }
 
-        // 文档附件条（紧贴输入栏上方）
+        // 文档附件条
         if (this.attachedFiles.length > 0) {
           Row() {
             Text(`已选择 ${this.attachedFiles.length} 个文件`)
@@ -571,7 +789,6 @@ export struct ChatPage {
         }
       )
 
-      // 全屏图片预览：根 Stack 的最后一个子节点，覆盖整页（含输入栏）
       if (this.previewUrl.length > 0) {
         ImagePreview({
           url: this.previewUrl,
@@ -586,8 +803,6 @@ export struct ChatPage {
     .width('100%')
     .height('100%')
   }
-
-  //====================
 
   @Builder
   SidebarOverlay() {
