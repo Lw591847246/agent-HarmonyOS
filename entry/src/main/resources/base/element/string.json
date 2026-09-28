@@ -15,6 +15,8 @@
     {
       "name": "reason_read_media",
       "value": "用于读取您选择的图片和文档，以便上传给 AI 助手处理"
-    }
+    },
+    { "name": "permission_internet_reason", "value": "用于与 AI 服务通信" },
+    { "name": "permission_mic_reason", "value": "用于语音输入" }
   ]
 }
