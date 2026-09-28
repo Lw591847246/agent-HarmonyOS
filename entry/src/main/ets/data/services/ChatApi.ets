@@ -1,7 +1,7 @@
 import http from '@ohos.net.http'
 import {
   HttpClient, HttpUploadFile, FormField,
-  ProcessFileStreamCallbacks,      // ⭐ 从 HttpClient import
+  ProcessFileStreamCallbacks,
 } from '../../common/network/HttpClient'
 import { ApiUrls } from '../../common/network/ApiUrls'
 import { ChatRequestDto, ProcessFileResponseDto, OcrResponseDto } from '../dto/Types'
@@ -13,6 +13,7 @@ export interface StreamBridgeCallbacks {
 }
 
 export class ChatApi {
+  // body 里已含 client_id
   static stream(body: ChatRequestDto, cb: StreamBridgeCallbacks): http.HttpRequest {
     return HttpClient.streamPost('agent', ApiUrls.CHAT, body, cb.onChunk, cb.onFinish, cb.onError)
   }
@@ -33,7 +34,7 @@ export class ChatApi {
     return HttpClient.uploadFiles<OcrResponseDto>('agent', ApiUrls.OCR, files, fields)
   }
 
-  // ⭐ 新增：流式上传
+  // fields 由调用方构造，已含 client_id
   static processFileStream(
     fields: FormField[],
     files: HttpUploadFile[],
@@ -47,5 +48,4 @@ export class ChatApi {
       cb,
     )
   }
-
 }

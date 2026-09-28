@@ -13,16 +13,17 @@ let msgCounter: number = 0
 export interface SendStreamOptions {
   text: string
   sessionId: string
+  clientId: string          // ⭐ 新增
   assistantMsg: ChatMessage
   onRefresh: () => void
   onScroll: () => void
   onFinish: () => void
 }
 
-// ⭐ 新增：文件流式选项
 export interface SendFilesStreamOptions {
   sessionId: string
   text: string
+  clientId: string          // ⭐ 新增
   files: FileItem[]
   assistantMsg: ChatMessage
   onRefresh: () => void
@@ -36,16 +37,21 @@ export class ChatUseCase {
     this.repo = new ChatRepositoryImpl(context)
   }
 
-  static createMessage(role: string, content: string): ChatMessage {
+  /** ⭐ 生成客户端幂等 ID */
+  static genClientId(): string {
+    return `${Date.now()}_${Math.floor(Math.random() * 0xffffff).toString(36)}`
+  }
+
+  static createMessage(role: string, content: string, clientId?: string): ChatMessage {
     msgCounter++
     const m = new ChatMessage()
     m.id = `msg_${Date.now()}_${msgCounter}`
     m.role = role
     m.content = content
+    if (clientId) m.clientId = clientId
     return m
   }
 
-  /** 处理非流式 JSON 响应（保留，兼容旧逻辑） */
   private async applyJsonResponse(data: StreamJsonResponseDto, msg: ChatMessage): Promise<void> {
     const type = data.type || ''
     if (type === 'image') {
@@ -82,7 +88,6 @@ export class ChatUseCase {
     return 'data:image/png;base64,' + raw
   }
 
-  /** 流式对话（保持不变） */
   sendStream(opt: SendStreamOptions): http.HttpRequest {
     const state = new StreamParseState()
     let jsonMode = false
@@ -90,7 +95,8 @@ export class ChatUseCase {
     let firstChunk = false
     const startMs = DateUtil.nowMs()
 
-    return this.repo.stream(opt.text, opt.sessionId, {
+    // ⭐ 把 clientId 透传给 repo
+    return this.repo.stream(opt.text, opt.sessionId, opt.clientId, {
       onChunk: (chunk: string) => {
         if (!firstChunk) {
           firstChunk = true
@@ -144,24 +150,17 @@ export class ChatUseCase {
     })
   }
 
-  // ============================================================
-  // ⭐ 新增：文件上传（流式版）
-  //   与 sendStream 语义一致：立即返回 HttpRequest，
-  //   内容通过 onRefresh 回调逐步呈现
-  // ============================================================
   sendFilesStream(opt: SendFilesStreamOptions): http.HttpRequest {
     const startMs = DateUtil.nowMs()
     opt.assistantMsg.thinkingDone = true
 
-    return this.repo.uploadFilesStream(opt.sessionId, opt.text, opt.files, {
+    // ⭐ 把 clientId 透传给 repo
+    return this.repo.uploadFilesStream(opt.sessionId, opt.text, opt.clientId, opt.files, {
       onChunk: (content: string) => {
-        // ⭐ 图片场景：后端会先发 {"type":"image","image_base64":"..."}，
-        //   repo 层已经解析成 content，或调用 onImage 回调单独处理
         opt.assistantMsg.content += content
         opt.onRefresh()
       },
       onImage: (base64: string) => {
-        // 图生图/文生图返回图片时走这里
         opt.assistantMsg.imageBase64 = this.toDataUri(base64)
         opt.onRefresh()
       },
@@ -180,8 +179,7 @@ export class ChatUseCase {
     })
   }
 
-  // ⚠️ 旧的 sendFiles 保留，但标记为待废弃
-  /** @deprecated 改用 sendFilesStream */
+  /** @deprecated 用 sendFilesStream */
   async sendFiles(sessionId: string, text: string, files: FileItem[]): Promise<ChatMessage> {
     const startMs = DateUtil.nowMs()
     const msg = ChatUseCase.createMessage('assistant', '')
@@ -221,7 +219,6 @@ export class ChatUseCase {
     return msg
   }
 
-  /** OCR（保持） */
   async ocr(files: FileItem[]): Promise<ChatMessage> {
     const msg = ChatUseCase.createMessage('assistant', '')
     msg.thinkingDone = true

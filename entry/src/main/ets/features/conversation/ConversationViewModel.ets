@@ -3,7 +3,7 @@ import { Conversation } from '../../domain/models/Conversation'
 import { ChatMessage } from '../../domain/models/ChatMessage'
 import { ChatUseCase } from '../chat/ChatUseCase'
 import { ErrorHandler } from '../../common/exceptions/ErrorHandler'
-import { EnvConfig } from '../../common/config/EnvConfig'  // ⭐ 确认有这个 import
+import { EnvConfig } from '../../common/config/EnvConfig'
 
 export class ConversationViewModel {
   private uc = new ConversationUseCase()
@@ -28,7 +28,10 @@ export class ConversationViewModel {
     try {
       const list = await this.uc.history(sessionId)
       return list.map((h) => {
-        const m = ChatUseCase.createMessage(h.role, h.content)
+        // ⭐ 第三参传 client_id（老数据后端返回 null → 前端置 ''）
+        const cid: string = h.clientId ? h.clientId : ''
+        const m = ChatUseCase.createMessage(h.role, h.content, cid)
+
         m.completed = true
         m.thinkingDone = true
 

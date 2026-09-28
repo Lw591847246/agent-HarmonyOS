@@ -4,10 +4,9 @@ import { FileApi } from '../services/FileApi'
 import {
   IChatRepository, StreamCallbacks,
   ProcessFileResult, OcrResult,
-  UploadFilesStreamCallbacks,        // ⭐ 新增
+  UploadFilesStreamCallbacks,
 } from '../../domain/repositories/IChatRepository'
 import { FileItem } from '../../domain/models/FileItem'
-
 
 export class ChatRepositoryImpl implements IChatRepository {
   private context: Context
@@ -16,8 +15,9 @@ export class ChatRepositoryImpl implements IChatRepository {
     this.context = context
   }
 
-  stream(text: string, sessionId: string, cb: StreamCallbacks): http.HttpRequest {
-    return ChatApi.stream({ text, session_id: sessionId }, {
+  stream(text: string, sessionId: string, clientId: string, cb: StreamCallbacks): http.HttpRequest {
+    // ⭐ body 里带上 client_id
+    return ChatApi.stream({ text, session_id: sessionId, client_id: clientId }, {
       onChunk: cb.onChunk,
       onFinish: cb.onFinish,
       onError: cb.onError
@@ -28,14 +28,15 @@ export class ChatRepositoryImpl implements IChatRepository {
     return FileApi.uploadAndProcess(this.context, sessionId, text, files)
   }
 
-  // ⭐ 新增：流式上传，委托给 FileApi
   uploadFilesStream(
     sessionId: string,
     text: string,
+    clientId: string,
     files: FileItem[],
     cb: UploadFilesStreamCallbacks,
   ): http.HttpRequest {
-    return FileApi.uploadAndProcessStream(this.context, sessionId, text, files, cb)
+    // ⭐ 透传给 FileApi
+    return FileApi.uploadAndProcessStream(this.context, sessionId, text, clientId, files, cb)
   }
 
   ocr(files: FileItem[]): Promise<OcrResult> {

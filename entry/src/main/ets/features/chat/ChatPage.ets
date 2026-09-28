@@ -22,6 +22,7 @@ import { SessionManager } from '../../core/session/SessionManager'
 import { RouteNames } from '../../core/router/RouteNames'
 import { ImageEditorParams, ImageEditorResult, IMAGE_EDITOR_DONE_EVENT } from '../imageeditor/models/ImageEditorParams'
 import { ImageActionDialog } from '../../common/ui/ImageActionDialog'
+import { ChatUseCase } from './ChatUseCase'
 
 
 /** ⭐ 一个"进行中的对话回合"：用户消息 + 助手占位（两者都持有引用） */
@@ -204,11 +205,11 @@ export struct ChatPage {
 
       const turn = this.pendingTurns.get(sessionId)
       if (turn) {
-        const hasUser = list.some((m: ChatMessage) =>
-        m.role === turn.user.role && m.content === turn.user.content)
-        if (!hasUser) {
+        if (!this._serverHasUserMsg(list, turn)) {          // ⭐ 改这里
           list.push(turn.user)
           Logger.i(`[ChatPage] ${sessionId} 补回本地 user 消息`)
+        } else {
+          Logger.i(`[ChatPage] ${sessionId} 服务端已有 user 消息，跳过补回`)
         }
         if (list.indexOf(turn.assistant) < 0) {
           list.push(turn.assistant)
@@ -252,8 +253,9 @@ export struct ChatPage {
     if (text.length === 0) return
 
     const requestSessionId = this.currentSessionId
+    const clientId = this.chatVM.genClientId()      // ⭐
 
-    const userMsg = this.chatVM.createUserMessage(text)
+    const userMsg = this.chatVM.createUserMessage(text, undefined, clientId)
     this.messages.push(userMsg)
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
@@ -269,6 +271,7 @@ export struct ChatPage {
       this.currentRequest = await this.chatVM.sendStream({
         text,
         sessionId: requestSessionId,
+        clientId,                                     // ⭐
         assistantMsg,
         onRefresh: () => {
           if (this.currentSessionId === requestSessionId) {
@@ -318,6 +321,7 @@ export struct ChatPage {
     if (this.isLoadingNow()) return
 
     const requestSessionId = this.currentSessionId
+    const clientId = this.chatVM.genClientId()      // ⭐
 
     const images = this.attachedImages
     const docs = this.attachedFiles
@@ -341,7 +345,7 @@ export struct ChatPage {
       }
     }
 
-    const userMsg = this.chatVM.createUserMessage(displayText, allFiles.map(f => f.name))
+    const userMsg = this.chatVM.createUserMessage(displayText, allFiles.map(f => f.name), clientId)
     this.messages.push(userMsg)
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
@@ -358,6 +362,7 @@ export struct ChatPage {
         requestSessionId,
         backendText,
         allFiles,
+        clientId,                                     // ⭐
         assistantMsg,
         () => {
           if (this.currentSessionId === requestSessionId) {
@@ -401,8 +406,9 @@ export struct ChatPage {
     if (!text) return
 
     const requestSessionId = this.currentSessionId
+    const clientId = this.chatVM.genClientId()      // ⭐
 
-    const newUserMsg = this.chatVM.createUserMessage(text, userMsg.files)
+    const newUserMsg = this.chatVM.createUserMessage(text, userMsg.files, clientId)
     this.messages.push(newUserMsg)
     const assistantMsg = this.chatVM.createAssistantPlaceholder()
     this.messages.push(assistantMsg)
@@ -417,6 +423,7 @@ export struct ChatPage {
       this.currentRequest = await this.chatVM.sendStream({
         text,
         sessionId: requestSessionId,
+        clientId,                                     // ⭐
         assistantMsg,
         onRefresh: () => {
           if (this.currentSessionId === requestSessionId) {
@@ -610,6 +617,23 @@ export struct ChatPage {
     Logger.i(`[ChatPage] session_id 兜底更新为: ${sid}，当前 UI 会话=${this.currentSessionId}`)
   }
 
+
+  /**
+   * ⭐ 判断 list 中是否已经包含 turn.user 这条消息
+   * 有 clientId：严格比对 clientId，100% 准确
+   * 无 clientId（老数据）：退化为 role+content 严格相等
+   */
+  private _serverHasUserMsg(list: ChatMessage[], turn: PendingTurn): boolean {
+    const cid = turn.user.clientId
+    if (!cid) {
+      return list.some((m: ChatMessage) =>
+      m.role === turn.user.role &&
+        (m.content || '').trim() === (turn.user.content || '').trim())
+    }
+    return list.some((m: ChatMessage) => m.role === 'user' && m.clientId === cid)
+  }
+
+
   private async _reloadMessages(sessionId: string): Promise<void> {
     try {
       const remote = await this.conversationVM.loadHistory(sessionId)
@@ -623,9 +647,9 @@ export struct ChatPage {
       const list: ChatMessage[] = remote ? [...remote] : []
       const turn = this.pendingTurns.get(sessionId)
       if (turn) {
-        const hasUser = list.some((m: ChatMessage) =>
-        m.role === turn.user.role && m.content === turn.user.content)
-        if (!hasUser) list.push(turn.user)
+        if (!this._serverHasUserMsg(list, turn)) {          // ⭐ 改这里
+          list.push(turn.user)
+        }
         if (list.indexOf(turn.assistant) < 0) list.push(turn.assistant)
       }
       this.messages = list

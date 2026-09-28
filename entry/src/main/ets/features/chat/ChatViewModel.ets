@@ -5,11 +5,9 @@ import { FileItem } from '../../domain/models/FileItem'
 import { ConversationViewModel } from '../conversation/ConversationViewModel'
 import { Logger } from '../../common/logger/Logger'
 
-
 export interface SendStreamOptionsExt extends SendStreamOptions {
   onSessionIdChange?: (sid: string) => void
 }
-
 
 export class ChatViewModel {
 
@@ -31,6 +29,11 @@ export class ChatViewModel {
     return this.currentSessionId
   }
 
+  // ⭐ 暴露给 UI 层生成
+  genClientId(): string {
+    return ChatUseCase.genClientId()
+  }
+
   async ensureSessionId(): Promise<string> {
     if (this.currentSessionId && this.currentSessionId.length > 0) {
       return this.currentSessionId
@@ -46,8 +49,9 @@ export class ChatViewModel {
     return this.currentSessionId
   }
 
-  createUserMessage(text: string, files?: string[]): ChatMessage {
-    const m = ChatUseCase.createMessage('user', text)
+  // ⭐ 加 clientId 可选参数
+  createUserMessage(text: string, files?: string[], clientId?: string): ChatMessage {
+    const m = ChatUseCase.createMessage('user', text, clientId)
     if (files) m.files = files
     return m
   }
@@ -70,6 +74,7 @@ export class ChatViewModel {
     const finalOpt: SendStreamOptions = {
       text: opt.text,
       sessionId: sid,
+      clientId: opt.clientId,          // ⭐ 透传
       assistantMsg: opt.assistantMsg,
       onRefresh: opt.onRefresh,
       onScroll: opt.onScroll,
@@ -78,13 +83,12 @@ export class ChatViewModel {
     return this.uc.sendStream(finalOpt)
   }
 
-  // ============================================================
-  // ⭐ 新增：文件流式上传
-  // ============================================================
+  // ⭐ 加 clientId 参数
   async sendFilesStream(
     sessionId: string,
     text: string,
     files: FileItem[],
+    clientId: string,
     assistantMsg: ChatMessage,
     onRefresh: () => void,
     onFinish: () => void,
@@ -98,6 +102,7 @@ export class ChatViewModel {
     const opt: SendFilesStreamOptions = {
       sessionId: sid,
       text: text,
+      clientId: clientId,              // ⭐ 透传
       files: files,
       assistantMsg: assistantMsg,
       onRefresh: onRefresh,
@@ -110,7 +115,6 @@ export class ChatViewModel {
   async sendFiles(sessionId: string, text: string, files: FileItem[]): Promise<ChatMessage> {
     if (sessionId && sessionId.length > 0) {
       this.currentSessionId = sessionId
-      Logger.i(`[ChatVM] sendFiles 使用外部 sessionId: ${sessionId}`)
     }
     const sid = await this.ensureSessionId()
     return this.uc.sendFiles(sid, text, files)

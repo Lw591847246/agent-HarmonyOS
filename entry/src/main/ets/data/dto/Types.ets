@@ -1,102 +1,15 @@
-/* ========== 通用响应（去掉索引签名） ========== */
-export interface ApiResponse<T = Object> {
-  code: number
-  message: string
-  data: T
-  total?: number
-  success?: boolean
-}
+import http from '@ohos.net.http'
+import { FileItem } from '../../domain/models/FileItem'
 
-/* ========== 权限菜单 ========== */
-export interface MenuItemDto {
-  id: number
-  parentId: number
-  name: string
-  code: string
-  level: number
-  type?: number | null
-  menuType?: string | null
-  path?: string | null
-  component?: string | null
-  icon?: string | null
-  sort?: number | null
-  status?: string | null
-  children?: MenuItemDto[] | null
-}
-
-export interface SubsystemDto {
-  systemName: string
-  systemCode: string
-  description: string
-  baseUrl: string
-  logo: string | null
-}
-
-export interface UserPermissionDto {
-  routes: MenuItemDto[]
-  buttons: string[]
-  subsystems: SubsystemDto[]
-}
-
-/* ========== 认证 ========== */
-export interface LoginRequestDto {
-  username: string
-  password: string
-}
-
-export interface LoginResponseDto {
-  userId?: number
-  username?: string
-  token?: string
-  authorization?: string
-}
-
-export interface RegisterRequestDto {
-  username: string
-  realName: string
-  phone: string
-  email: string
-  password: string
-  confirmPassword: string
-}
-
-/* ========== 会话 ========== */
-export interface ConversationDto {
-  session_id: string
-  title?: string
-}
-
-export interface CreateConversationResponseDto {
-  session_id: string
-}
-
-export interface HistoryMessageDto {
-  id?: number
-  role: string
-  content: string
-  created_at?: string
-  message_type?: string
-  image_url?: string
-  thumb_url?: string
-}
-
-export interface HistoryResponseDto {
-  session_id: string
-  messages: HistoryMessageDto[]
-}
-
-/* ========== 聊天 ========== */
 export interface ChatRequestDto {
   text: string
   session_id: string
+  client_id?: string          // ⭐ 新增
 }
 
-/* ========== 文件处理响应（支持图生图） ========== */
 export interface ProcessFileResponseDto {
-  type: string           // "text" | "image" | "multi"
-  content?: string       // 文本内容
-  image_base64?: string  // 图生图返回的图片 base64
-  prompt?: string        // 图生图使用的提示词
+  type: string
+  content?: string
   results?: ProcessFileResultItemDto[]
 }
 
@@ -104,15 +17,12 @@ export interface ProcessFileResultItemDto {
   type: string
   content?: string
   image_base64?: string
-  prompt?: string
 }
 
-// StreamJsonResponseDto 同理，补齐字段
 export interface StreamJsonResponseDto {
   type?: string
   content?: string
   image_base64?: string
-  prompt?: string
   results?: StreamJsonResultItemDto[]
 }
 
@@ -120,7 +30,6 @@ export interface StreamJsonResultItemDto {
   type?: string
   content?: string
   image_base64?: string
-  prompt?: string
 }
 
 export interface OcrResponseDto {
@@ -132,22 +41,84 @@ export interface OcrResultItemDto {
   filename: string
   text: string
 }
+// ============================================================
+// 会话相关 DTO
+// ============================================================
 
-/* ========== 文件上传表单（明确类型） ========== */
-export interface ProcessFileFormData {
+/** 会话列表项（GET /agent/v1/conversations 返回的数组元素） */
+export interface ConversationDto {
   session_id: string
-  text: string
+  title?: string
+  updated_at?: string
 }
 
-export interface OcrFormData {
-  // 空表单也要有明确类型
-  _placeholder: string
+/** 新建会话返回 */
+export interface CreateConversationResponseDto {
+  session_id: string
 }
 
-/* ========== 仓储实现中所需的中间类型 ========== */
-export interface LoginRootDto {
-  userId?: number
-  username?: string
+/** 历史消息项 */
+export interface HistoryMessageDto {
+  id: number
+  role: string
+  content: string
+  message_type?: string
+  image_url?: string
+  thumb_url?: string
+  client_id?: string          // ⭐ 新增：客户端幂等 ID（老数据可能为 null）
+  created_at?: string
+}
+
+/** 历史接口返回体（GET /agent/v1/conversations/{sid}/messages） */
+export interface HistoryResponseDto {
+  session_id: string
+  messages: HistoryMessageDto[]
+}
+
+// ============================================================
+// 通用响应包装（auth 服务用）
+// ============================================================
+
+export interface ApiResponse<T> {
+  code: number
+  message: string
+  data: T
+  total?: number
+  success?: boolean
+}
+
+// ============================================================
+// 登录 / 注册 DTO
+// ============================================================
+
+/** 登录请求体 */
+export interface LoginRequestDto {
+  username: string
+  password: string
+}
+
+/** 登录返回体（data 部分） */
+export interface LoginResponseDto {
+  /** 后端可能返回的两种字段，二选一 */
   token?: string
   authorization?: string
+  userId?: number
+  username?: string
+}
+
+/** 注册请求体（字段名需与后端对齐） */
+export interface RegisterRequestDto {
+  username: string
+  realName: string
+  phone: string
+  email: string
+  password: string
+  confirmPassword: string
+}
+
+/** 用户权限/菜单返回体（data 部分） */
+export interface UserPermissionDto {
+  userId?: number
+  menus?: string[]
+  permissions?: string[]
 }

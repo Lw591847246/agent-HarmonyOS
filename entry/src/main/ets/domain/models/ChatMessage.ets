@@ -11,4 +11,6 @@ export class ChatMessage {
   completed: boolean = false
   thinkingDone: boolean = true
   duration: number = 0
+  // ⭐ 客户端幂等 ID：user 消息落库后原样回传；assistant 消息不用
+  clientId: string = ''
 }

@@ -7,14 +7,12 @@ export interface StreamCallbacks {
   onError: (err: string) => void
 }
 
-// ⭐ 新增：文件流式上传回调
 export interface UploadFilesStreamCallbacks {
   onChunk: (content: string) => void
   onImage: (base64: string) => void
   onFinish: () => void
   onError: (err: string) => void
 }
-
 
 export interface ProcessFileResult {
   type: string
@@ -32,14 +30,16 @@ export interface ProcessFileResultItem {
 }
 
 export interface IChatRepository {
-  stream(text: string, sessionId: string, cb: StreamCallbacks): http.HttpRequest
+  // ⭐ 加 clientId
+  stream(text: string, sessionId: string, clientId: string, cb: StreamCallbacks): http.HttpRequest
 
   uploadFiles(sessionId: string, text: string, files: FileItem[]): Promise<ProcessFileResult>
 
-  // ⭐ 新增：流式上传
+  // ⭐ 加 clientId
   uploadFilesStream(
     sessionId: string,
     text: string,
+    clientId: string,
     files: FileItem[],
     cb: UploadFilesStreamCallbacks,
   ): http.HttpRequest
