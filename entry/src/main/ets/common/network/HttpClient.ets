@@ -8,6 +8,13 @@ import { Logger } from '../logger/Logger'
 import { TokenStore } from '../storage/TokenStore'
 import { MultipartBuilder, MultipartFile, MultipartField } from './MultipartBuilder'
 
+/** ⭐ SSE done 事件回传信息 */
+export interface SseDoneInfo {
+  messageId: number
+  durationMs: number
+}
+
+
 export interface HttpUploadFile {
   name: string
   uri: string
@@ -29,15 +36,18 @@ interface MultipartHeader {
 export interface ProcessFileStreamCallbacks {
   onChunk: (content: string) => void
   onImage: (base64: string) => void
+  onDone?: (info: SseDoneInfo) => void          // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
 }
 
 // ⭐ 新增：SSE 单条 payload 的解析结构
 interface SseUploadPayload {
-  content?: string
   type?: string
+  content?: string
   image_base64?: string
+  message_id?: number
+  duration_ms?: number
   error?: string
 }
 
@@ -96,6 +106,7 @@ export class HttpClient {
     path: string,
     body: Object,
     onChunk: (text: string) => void,
+    onDone: ((info: SseDoneInfo) => void) | undefined,
     onFinish: () => void,
     onError: (err: string) => void
   ): http.HttpRequest {
@@ -105,9 +116,28 @@ export class HttpClient {
     const req = http.createHttp()
     const decoder = util.TextDecoder.create('utf-8')
 
+    // ⭐ 兼容两路回调：把 onDone 桥接为 ProcessFileStreamCallbacks 形态
+    const bridge: ProcessFileStreamCallbacks = {
+      onChunk: (content: string) => { onChunk(content) },
+      onImage: (_: string) => { /* chat 接口不会来图 */ },
+      onDone: onDone
+        ? (info: SseDoneInfo) => { onDone(info) }
+        : undefined,
+      onFinish: () => { /* 由 dataEnd 控制 */ },
+      onError: (err: string) => { onError(err) },
+    }
+
+    let buffer = ''
     req.on('dataReceive', (data: ArrayBuffer) => {
       const text = decoder.decodeWithStream(new Uint8Array(data), { stream: true })
-      if (text) onChunk(text)
+      buffer += text
+      let idx: number = buffer.indexOf('\n\n')
+      while (idx >= 0) {
+        const raw = buffer.substring(0, idx)
+        buffer = buffer.substring(idx + 2)
+        HttpClient._handleSseLine(raw, bridge)
+        idx = buffer.indexOf('\n\n')
+      }
     })
     req.on('dataEnd', () => {
       Logger.i('dataEnd 流结束')
@@ -290,6 +320,13 @@ export class HttpClient {
       const obj: SseUploadPayload = JSON.parse(payload) as SseUploadPayload
       if (obj.error) {
         cb.onError(String(obj.error))
+      } else if (obj.type === 'done') {
+        if (cb.onDone) {
+          cb.onDone({
+            messageId: obj.message_id ?? 0,
+            durationMs: obj.duration_ms ?? 0,
+          })
+        }
       } else if (obj.type === 'image' && obj.image_base64) {
         cb.onImage(obj.image_base64)
       } else if (obj.content) {

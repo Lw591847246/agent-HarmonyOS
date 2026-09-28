@@ -10,6 +10,7 @@ export interface HistoryMessage {
   image_url?: string
   thumb_url?: string   // ⭐ 新增
   clientId?: string          // ⭐ 新增（camelCase）
+  durationMs?: number               // ⭐ 新增
 }
 
 export interface IConversationRepository {

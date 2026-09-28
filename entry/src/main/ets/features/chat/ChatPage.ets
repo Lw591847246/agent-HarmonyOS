@@ -271,7 +271,7 @@ export struct ChatPage {
       this.currentRequest = await this.chatVM.sendStream({
         text,
         sessionId: requestSessionId,
-        clientId,                                     // ⭐
+        clientId,
         assistantMsg,
         onRefresh: () => {
           if (this.currentSessionId === requestSessionId) {
@@ -287,23 +287,24 @@ export struct ChatPage {
             this.scrollToBottom()
           }
         },
+        // ⭐ 新增：服务端落库完成，就地更新本地消息
+        onDone: (info) => {
+          Logger.i(`[ChatPage] onDone msgId=${info.messageId} duration=${info.durationMs}ms`)
+          if (this.currentSessionId === requestSessionId) {
+            assistantMsg.id = `srv_${info.messageId}`
+            if (info.durationMs > 0) {
+              assistantMsg.duration = Math.round(info.durationMs / 1000)
+            }
+            assistantMsg.completed = true
+            this.messages = [...this.messages]
+            this.scrollToBottom()
+          }
+        },
         onFinish: () => {
           this.loadingSessionId = ''
           this._finishRequest(requestSessionId)
           this.loadConversations()
-
-          if (this.currentSessionId === requestSessionId) {
-            let tries = 0
-            const poll = async () => {
-              if (this.currentSessionId !== requestSessionId) return
-              if (tries++ >= 5) return
-              await this._reloadMessages(requestSessionId)
-              const last = this.messages[this.messages.length - 1]
-              if (last && last.completed) return
-              setTimeout(poll, 400)
-            }
-            setTimeout(poll, 400)
-          }
+          // ⭐ 不再轮询
         },
         onSessionIdChange: (sid: string) => {
           this._handleSessionIdChange(sid, requestSessionId)
@@ -362,7 +363,7 @@ export struct ChatPage {
         requestSessionId,
         backendText,
         allFiles,
-        clientId,                                     // ⭐
+        clientId,
         assistantMsg,
         () => {
           if (this.currentSessionId === requestSessionId) {
@@ -373,18 +374,22 @@ export struct ChatPage {
             this.scrollToBottom()
           }
         },
+        // ⭐ 新增 onDone
+        (info) => {
+          Logger.i(`[ChatPage] sendFiles onDone msgId=${info.messageId} duration=${info.durationMs}ms`)
+          if (this.currentSessionId === requestSessionId) {
+            assistantMsg.id = `srv_${info.messageId}`
+            if (info.durationMs > 0) {
+              assistantMsg.duration = Math.round(info.durationMs / 1000)
+            }
+            assistantMsg.completed = true
+            this.messages = [...this.messages]
+          }
+        },
         () => {
           this.loadingSessionId = ''
           this._finishRequest(requestSessionId)
           this.loadConversations()
-
-          if (this.currentSessionId === requestSessionId) {
-            setTimeout(() => {
-              if (this.currentSessionId === requestSessionId) {
-                this._reloadMessages(requestSessionId)
-              }
-            }, 800)
-          }
         },
       )
     } catch (e) {
@@ -423,7 +428,7 @@ export struct ChatPage {
       this.currentRequest = await this.chatVM.sendStream({
         text,
         sessionId: requestSessionId,
-        clientId,                                     // ⭐
+        clientId,
         assistantMsg,
         onRefresh: () => {
           if (this.currentSessionId === requestSessionId) {
@@ -439,18 +444,24 @@ export struct ChatPage {
             this.scrollToBottom()
           }
         },
+        // ⭐ 新增：服务端落库完成，就地更新本地消息
+        onDone: (info) => {
+          Logger.i(`[ChatPage] onDone msgId=${info.messageId} duration=${info.durationMs}ms`)
+          if (this.currentSessionId === requestSessionId) {
+            assistantMsg.id = `srv_${info.messageId}`
+            if (info.durationMs > 0) {
+              assistantMsg.duration = Math.round(info.durationMs / 1000)
+            }
+            assistantMsg.completed = true
+            this.messages = [...this.messages]
+            this.scrollToBottom()
+          }
+        },
         onFinish: () => {
           this.loadingSessionId = ''
           this._finishRequest(requestSessionId)
           this.loadConversations()
-
-          if (this.currentSessionId === requestSessionId) {
-            setTimeout(() => {
-              if (this.currentSessionId === requestSessionId) {
-                this._reloadMessages(requestSessionId)
-              }
-            }, 800)
-          }
+          // ⭐ 不再轮询
         },
         onSessionIdChange: (sid: string) => {
           this._handleSessionIdChange(sid, requestSessionId)

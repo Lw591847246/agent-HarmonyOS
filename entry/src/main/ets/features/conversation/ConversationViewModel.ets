@@ -34,6 +34,7 @@ export class ConversationViewModel {
 
         m.completed = true
         m.thinkingDone = true
+        m.duration = h.durationMs ? Math.round(h.durationMs / 1000) : 0    // ⭐ 新增
 
         if (h.message_type === 'image') {
           if (h.image_url) {
