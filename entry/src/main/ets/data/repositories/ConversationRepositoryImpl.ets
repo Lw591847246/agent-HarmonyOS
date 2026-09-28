@@ -39,9 +39,15 @@ export class ConversationRepositoryImpl implements IConversationRepository {
 
     const result: HistoryMessage[] = []
     for (let i = 0; i < list.length; i++) {
+      const d = list[i]
       const m: HistoryMessage = {
-        role: list[i].role,
-        content: list[i].content
+        id: d.id,
+        role: d.role,
+        content: d.content,
+        created_at: d.created_at,
+        message_type: d.message_type,
+        image_url: d.image_url,
+        thumb_url: d.thumb_url,
       }
       result.push(m)
     }

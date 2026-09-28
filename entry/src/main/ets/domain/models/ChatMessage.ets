@@ -1,12 +1,14 @@
 @Observed
 export class ChatMessage {
   id: string = ''
-  role: string = ''                 // 'user' | 'assistant'
+  role: string = ''
   content: string = ''
   thinking: string = ''
+  imageBase64: string = ''
+  thumbUrl: string = ''
+  imageUrl: string = ''
+  files: string[] = []
+  completed: boolean = false
   thinkingDone: boolean = true
   duration: number = 0
-  imageBase64: string = ''
-  completed: boolean = false
-  files: string[] = []
 }

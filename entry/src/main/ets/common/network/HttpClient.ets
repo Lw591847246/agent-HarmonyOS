@@ -25,6 +25,22 @@ interface MultipartHeader {
   'Authorization': string
 }
 
+// ⭐ 新增：流式上传回调（供 common 层使用）
+export interface ProcessFileStreamCallbacks {
+  onChunk: (content: string) => void
+  onImage: (base64: string) => void
+  onFinish: () => void
+  onError: (err: string) => void
+}
+
+// ⭐ 新增：SSE 单条 payload 的解析结构
+interface SseUploadPayload {
+  content?: string
+  type?: string
+  image_base64?: string
+  error?: string
+}
+
 export class HttpClient {
 
   // ==================== JSON POST ====================
@@ -38,7 +54,7 @@ export class HttpClient {
         header: HttpInterceptor.buildJsonHeader(),
         extraData: body ? JSON.stringify(body) : undefined,
         connectTimeout: AppConfig.CONNECT_TIMEOUT,
-        readTimeout: 120000
+        readTimeout: AppConfig.READ_TIMEOUT
       })
       const text = HttpInterceptor.handleResponse(resp)
       try {
@@ -61,7 +77,7 @@ export class HttpClient {
         method: http.RequestMethod.GET,
         header: HttpInterceptor.buildTokenHeader(),
         connectTimeout: AppConfig.CONNECT_TIMEOUT,
-        readTimeout: 30000
+        readTimeout: AppConfig.READ_TIMEOUT
       })
       const text = HttpInterceptor.handleResponse(resp)
       try {
@@ -116,7 +132,7 @@ export class HttpClient {
     return req
   }
 
-  // ==================== 文件上传（O(n) 拼接） ====================
+  // ==================== 文件上传（非流式，保留原样） ====================
   static async uploadFiles<T>(
     service: ServiceName,
     path: string,
@@ -128,7 +144,6 @@ export class HttpClient {
 
     const builder = new MultipartBuilder()
 
-    // 普通字段
     for (let i = 0; i < fields.length; i++) {
       const field: MultipartField = {
         key: fields[i].key,
@@ -137,7 +152,6 @@ export class HttpClient {
       builder.addField(field)
     }
 
-    // 文件字段
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
       const mf: MultipartFile = {
@@ -175,6 +189,114 @@ export class HttpClient {
       }
     } finally {
       req.destroy()
+    }
+  }
+
+  // ==================== ⭐ 新增：文件流式上传（SSE） ====================
+  static streamPostUpload(
+    service: ServiceName,
+    path: string,
+    files: HttpUploadFile[],
+    fields: FormField[],
+    cb: ProcessFileStreamCallbacks,
+  ): http.HttpRequest {
+    const url = ServiceRouter.getBaseUrl(service) + path
+    Logger.i(`STREAM-UPLOAD ${service} ${url}`)
+
+    // ---------- 1) 构造 multipart body（照抄 uploadFiles） ----------
+    const builder = new MultipartBuilder()
+
+    for (let i = 0; i < fields.length; i++) {
+      const field: MultipartField = {
+        key: fields[i].key,
+        value: fields[i].value
+      }
+      builder.addField(field)
+    }
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const mf: MultipartFile = {
+        fieldName: 'files',
+        fileName: file.name,
+        filePath: file.uri,
+        mimeType: file.mimeType ? file.mimeType : 'application/octet-stream'
+      }
+      builder.addFile(mf)
+    }
+
+    const body = builder.build()
+
+    const token = TokenStore.getToken()
+    const header: MultipartHeader = {
+      'Content-Type': builder.getContentType(),
+      'Authorization': token
+    }
+
+    // ---------- 2) 发起流式请求 ----------
+    const req = http.createHttp()
+    const decoder = util.TextDecoder.create('utf-8')
+    let buffer = ''
+
+    // ⭐ 逐块接收 + SSE 累积解析
+    req.on('dataReceive', (data: ArrayBuffer) => {
+      try {
+        const text = decoder.decodeWithStream(new Uint8Array(data), { stream: true })
+        buffer += text
+
+        // SSE 每条消息以 \n\n 结尾
+        let idx: number = buffer.indexOf('\n\n')
+        while (idx >= 0) {
+          const raw = buffer.substring(0, idx)
+          buffer = buffer.substring(idx + 2)
+          HttpClient._handleSseLine(raw, cb)
+          idx = buffer.indexOf('\n\n')
+        }
+      } catch (e) {
+        Logger.e(`STREAM-UPLOAD 解码失败: ${(e as Error).message}`)
+      }
+    })
+
+    req.on('dataEnd', () => {
+      Logger.i('STREAM-UPLOAD dataEnd')
+      cb.onFinish()
+      req.destroy()
+    })
+
+    req.requestInStream(url, {
+      method: http.RequestMethod.POST,
+      header: header,
+      extraData: body,
+      connectTimeout: AppConfig.CONNECT_TIMEOUT,
+      readTimeout: AppConfig.READ_TIMEOUT
+    }).then((code: number) => {
+      Logger.i(`STREAM-UPLOAD 返回码: ${code}`)
+    }).catch((err: Error) => {
+      Logger.e(`STREAM-UPLOAD 错误: ${err.message}`)
+      cb.onError(err.message)
+      req.destroy()
+    })
+
+    return req
+  }
+
+  // ---------- ⭐ 私有：解析单条 SSE ----------
+  private static _handleSseLine(raw: string, cb: ProcessFileStreamCallbacks): void {
+    if (!raw.startsWith('data:')) return
+    const payload = raw.substring(5).trim()
+    if (!payload || payload === '[DONE]') return
+
+    try {
+      const obj: SseUploadPayload = JSON.parse(payload) as SseUploadPayload
+      if (obj.error) {
+        cb.onError(String(obj.error))
+      } else if (obj.type === 'image' && obj.image_base64) {
+        cb.onImage(obj.image_base64)
+      } else if (obj.content) {
+        cb.onChunk(obj.content)
+      }
+    } catch (e) {
+      Logger.e(`SSE 解析失败: ${payload.substring(0, 200)}`)
     }
   }
 }

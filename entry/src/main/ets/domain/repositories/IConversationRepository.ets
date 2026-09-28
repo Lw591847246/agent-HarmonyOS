@@ -1,8 +1,14 @@
 import { Conversation } from '../models/Conversation'
 
 export interface HistoryMessage {
+  id?: number
   role: string
   content: string
+  created_at?: string
+  message_type?: string
+  image_thumb_base64?: string
+  image_url?: string
+  thumb_url?: string   // ⭐ 新增
 }
 
 export interface IConversationRepository {
