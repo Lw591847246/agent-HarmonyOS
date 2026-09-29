@@ -4,6 +4,7 @@ import { SseDoneInfo } from '../../common/network/HttpClient'
 
 export interface StreamCallbacks {
   onChunk: (text: string) => void
+  onImage: (base64: string) => void        // ⭐ 新增
   onDone?: (info: SseDoneInfo) => void          // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void

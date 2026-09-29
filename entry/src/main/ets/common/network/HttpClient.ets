@@ -106,6 +106,7 @@ export class HttpClient {
     path: string,
     body: Object,
     onChunk: (text: string) => void,
+    onImage: (base64: string) => void,                // ⭐ 新增
     onDone: ((info: SseDoneInfo) => void) | undefined,
     onFinish: () => void,
     onError: (err: string) => void
@@ -119,7 +120,7 @@ export class HttpClient {
     // ⭐ 兼容两路回调：把 onDone 桥接为 ProcessFileStreamCallbacks 形态
     const bridge: ProcessFileStreamCallbacks = {
       onChunk: (content: string) => { onChunk(content) },
-      onImage: (_: string) => { /* chat 接口不会来图 */ },
+      onImage: (base64: string) => { onImage(base64) },   // ⭐ 从丢弃改为透传
       onDone: onDone
         ? (info: SseDoneInfo) => { onDone(info) }
         : undefined,
@@ -289,6 +290,13 @@ export class HttpClient {
 
     req.on('dataEnd', () => {
       Logger.i('STREAM-UPLOAD dataEnd')
+      // ⭐ 如果 buffer 里还有剩余内容（非 SSE 格式的 JSON），尝试整体解析
+      if (buffer.length > 0 && !buffer.startsWith('data:')) {
+        try {
+          const obj: SseUploadPayload = JSON.parse(buffer) as SseUploadPayload
+          HttpClient._dispatchSse(obj, cb)
+        } catch (_) { /* ignore */ }
+      }
       cb.onFinish()
       req.destroy()
     })
@@ -318,22 +326,27 @@ export class HttpClient {
 
     try {
       const obj: SseUploadPayload = JSON.parse(payload) as SseUploadPayload
-      if (obj.error) {
-        cb.onError(String(obj.error))
-      } else if (obj.type === 'done') {
-        if (cb.onDone) {
-          cb.onDone({
-            messageId: obj.message_id ?? 0,
-            durationMs: obj.duration_ms ?? 0,
-          })
-        }
-      } else if (obj.type === 'image' && obj.image_base64) {
-        cb.onImage(obj.image_base64)
-      } else if (obj.content) {
-        cb.onChunk(obj.content)
-      }
+      HttpClient._dispatchSse(obj, cb)
     } catch (e) {
       Logger.e(`SSE 解析失败: ${payload.substring(0, 200)}`)
+    }
+  }
+
+  // ⭐ 新增：统一分发
+  private static _dispatchSse(obj: SseUploadPayload, cb: ProcessFileStreamCallbacks): void {
+    if (obj.error) {
+      cb.onError(String(obj.error))
+    } else if (obj.type === 'done') {
+      if (cb.onDone) {
+        cb.onDone({
+          messageId: obj.message_id ?? 0,
+          durationMs: obj.duration_ms ?? 0,
+        })
+      }
+    } else if (obj.type === 'image' && obj.image_base64) {
+      cb.onImage(obj.image_base64)      // ⭐ 图片走这个回调
+    } else if (obj.content) {
+      cb.onChunk(obj.content)
     }
   }
 }

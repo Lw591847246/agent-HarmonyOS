@@ -19,6 +19,7 @@ export class ChatRepositoryImpl implements IChatRepository {
     // ⭐ body 里带上 client_id
     return ChatApi.stream({ text, session_id: sessionId, client_id: clientId }, {
       onChunk: cb.onChunk,
+      onImage: cb.onImage,                  // ⭐ 透传
       onDone: cb.onDone,
       onFinish: cb.onFinish,
       onError: cb.onError

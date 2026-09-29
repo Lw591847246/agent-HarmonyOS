@@ -115,10 +115,20 @@ export class ChatUseCase {
         opt.onRefresh()
         opt.onScroll()
       },
-      onDone: (info) => { opt.onDone(info) },   // ⭐ 透传
+
+      // ⭐ 新增：图片事件 → 塞到 assistantMsg，前端立刻渲染
+      onImage: (base64: string) => {
+        opt.assistantMsg.imageBase64 = this.toDataUri(base64)
+        if (!opt.assistantMsg.content) {
+          opt.assistantMsg.content = '[图片已生成]'
+        }
+        opt.onRefresh()
+        opt.onScroll()
+      },
+
+      onDone: (info) => { opt.onDone(info) },
       onFinish: () => {
         const finalize = () => {
-          // ⭐ duration 以服务端为准，若 onDone 已经给了就不覆盖
           if (opt.assistantMsg.duration === 0) {
             opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
           }

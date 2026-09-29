@@ -9,6 +9,7 @@ import { SseDoneInfo } from '../../common/network/HttpClient'
 
 export interface StreamBridgeCallbacks {
   onChunk: (text: string) => void
+  onImage: (base64: string) => void        // ⭐ 新增
   onDone?: (info: SseDoneInfo) => void // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
@@ -18,7 +19,7 @@ export interface StreamBridgeCallbacks {
 export class ChatApi {
   // body 里已含 client_id
   static stream(body: ChatRequestDto, cb: StreamBridgeCallbacks): http.HttpRequest {
-    return HttpClient.streamPost('agent', ApiUrls.CHAT, body, cb.onChunk, cb.onDone, cb.onFinish, cb.onError)
+    return HttpClient.streamPost('agent', ApiUrls.CHAT, body, cb.onChunk,cb.onImage, cb.onDone, cb.onFinish, cb.onError)
   }
 
   static processFile(
