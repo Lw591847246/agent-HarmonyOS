@@ -4,6 +4,7 @@ import { ChatMessage } from '../../domain/models/ChatMessage'
 import { FileItem } from '../../domain/models/FileItem'
 import { ConversationViewModel } from '../conversation/ConversationViewModel'
 import { Logger } from '../../common/logger/Logger'
+import { SseDoneInfo } from '../../common/network/HttpClient'      // ⭐ 新增 import
 
 export interface SendStreamOptionsExt extends SendStreamOptions {
   onSessionIdChange?: (sid: string) => void
@@ -29,7 +30,6 @@ export class ChatViewModel {
     return this.currentSessionId
   }
 
-  // ⭐ 暴露给 UI 层生成
   genClientId(): string {
     return ChatUseCase.genClientId()
   }
@@ -49,7 +49,6 @@ export class ChatViewModel {
     return this.currentSessionId
   }
 
-  // ⭐ 加 clientId 可选参数
   createUserMessage(text: string, files?: string[], clientId?: string): ChatMessage {
     const m = ChatUseCase.createMessage('user', text, clientId)
     if (files) m.files = files
@@ -74,16 +73,16 @@ export class ChatViewModel {
     const finalOpt: SendStreamOptions = {
       text: opt.text,
       sessionId: sid,
-      clientId: opt.clientId,          // ⭐ 透传
+      clientId: opt.clientId,
       assistantMsg: opt.assistantMsg,
       onRefresh: opt.onRefresh,
       onScroll: opt.onScroll,
+      onDone: opt.onDone,                        // ⭐ 透传
       onFinish: opt.onFinish,
     }
     return this.uc.sendStream(finalOpt)
   }
 
-  // ⭐ 加 clientId 参数
   async sendFilesStream(
     sessionId: string,
     text: string,
@@ -91,6 +90,7 @@ export class ChatViewModel {
     clientId: string,
     assistantMsg: ChatMessage,
     onRefresh: () => void,
+    onDone: (info: SseDoneInfo) => void,
     onFinish: () => void,
   ): Promise<http.HttpRequest> {
     if (sessionId && sessionId.length > 0) {
@@ -102,10 +102,11 @@ export class ChatViewModel {
     const opt: SendFilesStreamOptions = {
       sessionId: sid,
       text: text,
-      clientId: clientId,              // ⭐ 透传
+      clientId: clientId,
       files: files,
       assistantMsg: assistantMsg,
       onRefresh: onRefresh,
+      onDone: onDone,                            // ⭐ 补上这一行
       onFinish: onFinish,
     }
     return this.uc.sendFilesStream(opt)

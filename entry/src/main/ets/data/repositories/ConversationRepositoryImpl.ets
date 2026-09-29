@@ -49,6 +49,7 @@ export class ConversationRepositoryImpl implements IConversationRepository {
         image_url: d.image_url,
         thumb_url: d.thumb_url,
         clientId: d.client_id ? d.client_id : '',
+        durationMs: d.duration_ms ?? 0,            // ⭐ 新增
       }
       result.push(m)
     }

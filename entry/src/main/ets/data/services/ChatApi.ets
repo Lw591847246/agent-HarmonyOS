@@ -1,21 +1,24 @@
 import http from '@ohos.net.http'
 import {
-  HttpClient, HttpUploadFile, FormField,
-  ProcessFileStreamCallbacks,
+  HttpClient, HttpUploadFile, FormField, ProcessFileStreamCallbacks,
 } from '../../common/network/HttpClient'
 import { ApiUrls } from '../../common/network/ApiUrls'
 import { ChatRequestDto, ProcessFileResponseDto, OcrResponseDto } from '../dto/Types'
+import { SseDoneInfo } from '../../common/network/HttpClient'
+
 
 export interface StreamBridgeCallbacks {
   onChunk: (text: string) => void
+  onDone?: (info: SseDoneInfo) => void // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
 }
 
+
 export class ChatApi {
   // body 里已含 client_id
   static stream(body: ChatRequestDto, cb: StreamBridgeCallbacks): http.HttpRequest {
-    return HttpClient.streamPost('agent', ApiUrls.CHAT, body, cb.onChunk, cb.onFinish, cb.onError)
+    return HttpClient.streamPost('agent', ApiUrls.CHAT, body, cb.onChunk, cb.onDone, cb.onFinish, cb.onError)
   }
 
   static processFile(

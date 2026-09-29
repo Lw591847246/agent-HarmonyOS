@@ -66,6 +66,7 @@ export interface HistoryMessageDto {
   image_url?: string
   thumb_url?: string
   client_id?: string          // ⭐ 新增：客户端幂等 ID（老数据可能为 null）
+  duration_ms?: number              // ⭐ 新增
   created_at?: string
 }
 

@@ -7,6 +7,7 @@ import { StreamParser, StreamParseState } from '../../common/network/StreamParse
 import { StreamJsonResponseDto } from '../../data/dto/Types'
 import { DateUtil } from '../../common/utils/DateUtil'
 import { Logger } from '../../common/logger/Logger'
+import { SseDoneInfo } from '../../common/network/HttpClient'
 
 let msgCounter: number = 0
 
@@ -17,6 +18,7 @@ export interface SendStreamOptions {
   assistantMsg: ChatMessage
   onRefresh: () => void
   onScroll: () => void
+  onDone: (info: SseDoneInfo) => void         // ⭐ 新增
   onFinish: () => void
 }
 
@@ -27,6 +29,7 @@ export interface SendFilesStreamOptions {
   files: FileItem[]
   assistantMsg: ChatMessage
   onRefresh: () => void
+  onDone: (info: SseDoneInfo) => void         // ⭐ 新增
   onFinish: () => void
 }
 
@@ -95,7 +98,6 @@ export class ChatUseCase {
     let firstChunk = false
     const startMs = DateUtil.nowMs()
 
-    // ⭐ 把 clientId 透传给 repo
     return this.repo.stream(opt.text, opt.sessionId, opt.clientId, {
       onChunk: (chunk: string) => {
         if (!firstChunk) {
@@ -113,9 +115,13 @@ export class ChatUseCase {
         opt.onRefresh()
         opt.onScroll()
       },
+      onDone: (info) => { opt.onDone(info) },   // ⭐ 透传
       onFinish: () => {
         const finalize = () => {
-          opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
+          // ⭐ duration 以服务端为准，若 onDone 已经给了就不覆盖
+          if (opt.assistantMsg.duration === 0) {
+            opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
+          }
           opt.assistantMsg.completed = true
           Logger.i(`[finalize] imgLen=${opt.assistantMsg.imageBase64.length}`)
           opt.onRefresh()
@@ -154,7 +160,6 @@ export class ChatUseCase {
     const startMs = DateUtil.nowMs()
     opt.assistantMsg.thinkingDone = true
 
-    // ⭐ 把 clientId 透传给 repo
     return this.repo.uploadFilesStream(opt.sessionId, opt.text, opt.clientId, opt.files, {
       onChunk: (content: string) => {
         opt.assistantMsg.content += content
@@ -164,8 +169,11 @@ export class ChatUseCase {
         opt.assistantMsg.imageBase64 = this.toDataUri(base64)
         opt.onRefresh()
       },
+      onDone: (info) => { opt.onDone(info) },   // ⭐ 透传
       onFinish: () => {
-        opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
+        if (opt.assistantMsg.duration === 0) {
+          opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
+        }
         opt.assistantMsg.completed = true
         opt.onRefresh()
         opt.onFinish()

@@ -1,18 +1,23 @@
 import http from '@ohos.net.http'
 import { FileItem } from '../models/FileItem'
+import { SseDoneInfo } from '../../common/network/HttpClient'
 
 export interface StreamCallbacks {
   onChunk: (text: string) => void
+  onDone?: (info: SseDoneInfo) => void          // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
 }
+
 
 export interface UploadFilesStreamCallbacks {
   onChunk: (content: string) => void
   onImage: (base64: string) => void
+  onDone?: (info: SseDoneInfo) => void          // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
 }
+
 
 export interface ProcessFileResult {
   type: string
