@@ -9,6 +9,7 @@ export interface HistoryMessage {
   image_thumb_base64?: string
   image_url?: string
   thumb_url?: string   // ⭐ 新增
+  clientId?: string          // ⭐ 新增（camelCase）
 }
 
 export interface IConversationRepository {

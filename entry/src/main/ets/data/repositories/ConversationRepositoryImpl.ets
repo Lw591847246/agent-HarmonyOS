@@ -48,6 +48,7 @@ export class ConversationRepositoryImpl implements IConversationRepository {
         message_type: d.message_type,
         image_url: d.image_url,
         thumb_url: d.thumb_url,
+        clientId: d.client_id ? d.client_id : '',
       }
       result.push(m)
     }

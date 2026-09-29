@@ -26,9 +26,11 @@ export class UserRepositoryImpl implements IUserRepository {
     if (!authorization) throw AppError.business('登录返回缺少 authorization')
 
     const user: User = {
-      userId: root && root.userId ? String(root.userId) : '',
-      username: root && root.username ? root.username : username
+      userId: (root && root.userId !== undefined && root.userId !== null)
+        ? String(root.userId) : '',
+      username: (root && root.username) ? root.username : username
     }
+
     const credential: LoginCredential = {
       authorization: authorization,
       user: user

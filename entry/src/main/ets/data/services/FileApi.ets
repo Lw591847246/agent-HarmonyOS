@@ -5,13 +5,10 @@ import { SandboxFileUtil } from '../../common/utils/SandboxFileUtil'
 import { ChatApi } from './ChatApi'
 import { Logger } from '../../common/logger/Logger'
 import http from '@ohos.net.http'
-import { FormField } from '../../common/network/HttpClient'          // ⭐ 新增
-import { UploadFilesStreamCallbacks } from '../../domain/repositories/IChatRepository'  // ⭐ 新增
-import { ProcessFileStreamCallbacks } from '../../common/network/HttpClient'           // ⭐ 新增
+import { FormField } from '../../common/network/HttpClient'
+import { UploadFilesStreamCallbacks } from '../../domain/repositories/IChatRepository'
+import { ProcessFileStreamCallbacks } from '../../common/network/HttpClient'
 
-
-
-/** 预处理结果：上传文件 + 沙箱路径（用于上传后清理） */
 export interface PreparedFiles {
   httpFiles: HttpUploadFile[]
   sandboxPaths: string[]
@@ -19,7 +16,6 @@ export interface PreparedFiles {
 
 export class FileApi {
 
-  /** 把领域文件转成可上传文件，同时记录沙箱路径 */
   static prepareFiles(context: Context, files: FileItem[]): PreparedFiles {
     const httpFiles: HttpUploadFile[] = []
     const sandboxPaths: string[] = []
@@ -40,14 +36,10 @@ export class FileApi {
       sandboxPaths.push(sandboxPath)
     }
 
-    const result: PreparedFiles = {
-      httpFiles: httpFiles,
-      sandboxPaths: sandboxPaths
-    }
+    const result: PreparedFiles = { httpFiles, sandboxPaths }
     return result
   }
 
-  /** 上传文档并处理。上传结束后自动清理沙箱文件 */
   static async uploadAndProcess(
     context: Context,
     sessionId: string,
@@ -61,17 +53,16 @@ export class FileApi {
     try {
       return await ChatApi.processFile(sessionId, text, prepared.httpFiles)
     } finally {
-      // ✅ 无论成功失败，都清理沙箱文件
       SandboxFileUtil.deleteFiles(prepared.sandboxPaths)
     }
   }
 
-
-  /** ⭐ 新增：流式上传文档并处理。沙箱清理放在流结束/出错时执行 */
+  /** ⭐ 加 clientId 参数 */
   static uploadAndProcessStream(
     context: Context,
     sessionId: string,
     text: string,
+    clientId: string,          // ⭐ 新增
     files: FileItem[],
     cb: UploadFilesStreamCallbacks,
   ): http.HttpRequest {
@@ -84,12 +75,13 @@ export class FileApi {
       return dummy
     }
 
+    // ⭐ fields 里带 client_id
     const fields: FormField[] = [
       { key: 'session_id', value: sessionId },
       { key: 'text', value: text },
+      { key: 'client_id', value: clientId },
     ]
 
-    // ⭐ 桥接：domain 层 callback → common 层 callback
     const streamCb: ProcessFileStreamCallbacks = {
       onChunk: (content: string) => { cb.onChunk(content) },
       onImage: (base64: string) => { cb.onImage(base64) },
@@ -106,8 +98,6 @@ export class FileApi {
     return ChatApi.processFileStream(fields, prepared.httpFiles, streamCb)
   }
 
-
-  /** OCR 识别。上传结束后自动清理沙箱文件 */
   static async ocr(context: Context, files: FileItem[]): Promise<OcrResponseDto> {
     const prepared = FileApi.prepareFiles(context, files)
     if (prepared.httpFiles.length === 0) {
