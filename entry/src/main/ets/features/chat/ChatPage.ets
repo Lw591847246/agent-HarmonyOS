@@ -30,6 +30,7 @@ import { TtsService } from '../../common/voice/TtsService'
 import { ensureMicPermission } from '../../common/voice/VoicePermission'
 import { RecordPanelState } from '../../common/ui/VoiceRecordPanel'
 import { VoiceRecordResult } from '../../common/voice/VoiceRecorderService'
+import { DownloadUtil } from '../../common/utils/DownloadUtil'
 
 /** ⭐ 一个"进行中的对话回合"：用户消息 + 助手占位（两者都持有引用） */
 interface PendingTurn {
@@ -525,6 +526,25 @@ export struct ChatPage {
     })
   }
 
+  /** ⭐ 处理 PPT 等文件下载 */
+  private async handleDownload(relativeUrl: string): Promise<void> {
+    const filename = relativeUrl.split('/').pop() || `file_${Date.now()}`
+    Logger.i(`[ChatPage] 开始下载: ${relativeUrl} → ${filename}`)
+
+    promptAction.openToast({ message: '正在下载…' })
+
+    try {
+      const saved = await DownloadUtil.downloadAndSave(relativeUrl, filename)
+      if (saved) {
+        promptAction.openToast({ message: '已保存' })
+      }
+      // 用户取消保存：静默返回，不提示
+    } catch (e) {
+      promptAction.openToast({ message: `下载失败: ${(e as Error).message}` })
+    }
+  }
+
+
   handleAction(type: string, msg: ChatMessage): void {
     if (type === MessageActionType.COPY) this.copyMessage(msg)
     else if (type === MessageActionType.REGENERATE) this.regenerate(msg)
@@ -924,38 +944,29 @@ export struct ChatPage {
   private async triggerTtsRead(msg: ChatMessage): Promise<void> {
     if (!msg.content) return
 
-    // 先停掉之前的
-    await this.tts.stop()
-    if (this.readingTimer) {
-      clearTimeout(this.readingTimer)
-      this.readingTimer = 0
-    }
+    // 先停掉上一条
+    await this.stopTtsRead()
 
+    // UI 立刻变红
     this.aiReadingId = msg.id
-    const ok = await this.tts.speak(msg.content)
-    if (!ok) {
-      this.aiReadingId = ''
-      return
+
+    try {
+      // ⭐ await 到"播完 / 失败 / 被停止"
+      await this.tts.speak(msg.content)
+    } catch (e) {
+      Logger.e(`[ChatPage] TTS 失败: ${(e as Error).message}`)
     }
 
-    // ⭐ 按文本长度估算时长（中文约 5 字/秒，最小 2 秒）
-    const estSec = Math.max(2, Math.ceil(msg.content.length / 5))
-    Logger.i(`[TTS] 预估朗读 ${estSec}s，len=${msg.content.length}`)
-    this.readingTimer = setTimeout(() => {
-      if (this.aiReadingId === msg.id) {
-        this.aiReadingId = ''
-      }
-      this.readingTimer = 0
-    }, estSec * 1000)
+    // ⭐ 自然结束或出错都清空
+    if (this.aiReadingId === msg.id) {
+      this.aiReadingId = ''
+    }
   }
 
   private async stopTtsRead(): Promise<void> {
-    if (this.readingTimer) {
-      clearTimeout(this.readingTimer)
-      this.readingTimer = 0
-    }
-    await this.tts.stop()
+    // ⭐ UI 立刻变回"朗读"
     this.aiReadingId = ''
+    await this.tts.stop()
   }
 
   build() {
@@ -1017,6 +1028,7 @@ export struct ChatPage {
                       this.triggerTtsRead(msg)
                     }
                   },
+                  onDownload: (url: string) => this.handleDownload(url),
                   onAction: (t: string) => { this.handleAction(t, msg) },
                   onPreviewImage: (imageUrl: string) => {
                     this.previewUrl = imageUrl
@@ -1026,7 +1038,12 @@ export struct ChatPage {
             }, (msg: ChatMessage) => {
               const imgFlag = msg.imageBase64.length > 0 ? 'img'
                 : (msg.thumbUrl && msg.thumbUrl.length > 0 ? 'thumb' : 'no')
-              return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}`
+              // ⭐ 把"朗读中/播放中"塞进 key，状态变则 key 变 → UI 强制刷新
+              const readingFlag = this.aiReadingId === msg.id ? 'R' : 'N'
+              const playingFlag = this.playingMsgId === msg.id ? 'P' : 'N'
+              // ⭐ 加 dlFlag，让 [DL:...] 到达时触发重建
+              const dlFlag = msg.content.indexOf('[DL:') >= 0 ? 'D' : 'N'
+              return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}_${readingFlag}_${playingFlag}`
             })
           }
           .width('100%')

@@ -17,6 +17,8 @@ export struct MessageItem {
 
   @Prop isVoicePlaying: boolean = false
   @Prop isAiReading: boolean = false
+
+  onDownload: (relativeUrl: string) => void = () => {}
   onVoicePlay: () => void = () => {}
   onVoiceStop: () => void = () => {}
   onToggleAiReading: () => void = () => {}
@@ -33,6 +35,25 @@ export struct MessageItem {
     if (hasImage && this.msg.content.length < 10) return false
     return true
   }
+
+  /**
+   * ⭐ 从消息内容里提取下载 URL
+   * 匹配 [DL:/agent/v1/ppt/download/xxx/yyy.pptx]
+   */
+  private _extractDownloadUrl(content: string): string {
+    if (!content) return ''
+    const m = content.match(/\[DL:([^\]]+)\]/)
+    return m ? m[1] : ''
+  }
+
+  /**
+   * ⭐ 把 [DL:xxx] 标记从显示文本里删掉（连带前后多余的换行）
+   */
+  private _stripDownloadMarker(content: string): string {
+    if (!content) return ''
+    return content.replace(/\n?\[DL:[^\]]+\]\n?/g, '').trim()
+  }
+
 
   @Builder
   renderMdLine(line: MdLine) {
@@ -58,6 +79,35 @@ export struct MessageItem {
       Text(line.text).fontSize(15).lineHeight(22).width('100%')
     }
   }
+
+  /** ⭐ 下载按钮（仅当消息里含下载链接时显示） */
+  /** ⭐ 下载按钮：仅当消息里含 [DL:...] 标记时显示 */
+  @Builder
+  renderDownloadButton() {
+    if (this.msg.role === 'assistant') {
+      if (this._extractDownloadUrl(this.msg.content).length > 0) {
+        Row({ space: 6 }) {
+          Image($r('app.media.ic_download'))
+            .width(16)
+            .height(16)
+            .objectFit(ImageFit.Contain)
+          Text('下载')
+            .fontSize(13)
+            .fontColor(Color.White)
+            .fontWeight(FontWeight.Medium)
+        }
+        .padding({ left: 12, right: 14, top: 7, bottom: 7 })
+        .borderRadius(8)
+        .backgroundColor('#4A90E2')
+        .margin({ top: 8 })
+        .onClick(() => {
+          const url = this._extractDownloadUrl(this.msg.content)
+          if (url) this.onDownload(url)
+        })
+      }
+    }
+  }
+
 
   build() {
     Column() {
@@ -152,7 +202,7 @@ export struct MessageItem {
             // 正文
             if (this.msg.content.length > 0) {
               Column() {
-                ForEach(MarkdownParser.parseLines(this.msg.content), (line: MdLine) => {
+                ForEach(MarkdownParser.parseLines(this._stripDownloadMarker(this.msg.content)), (line: MdLine) => {
                   this.renderMdLine(line)
                 }, (line: MdLine, idx: number) => `${idx}_${line.type}_${line.text.length}`)
               }
@@ -163,7 +213,7 @@ export struct MessageItem {
                 Text('正在生成...').fontSize(13).fontColor('#999').margin({ left: 8 })
               }.width('100%')
             }
-
+            this.renderDownloadButton()
             // 底部操作栏 + 朗读按钮 + 耗时
             if (this.msg.completed || this.msg.duration > 0) {
               Row() {
