@@ -1,7 +1,6 @@
 import http from '@ohos.net.http'
 import pasteboard from '@ohos.pasteboard'
 import { promptAction } from '@kit.ArkUI'
-import { common } from '@kit.AbilityKit'   // ⭐ 新增
 
 import { ChatViewModel } from '../../features/chat/ChatViewModel'
 import { ConversationViewModel } from '../../features/conversation/ConversationViewModel'
@@ -22,7 +21,6 @@ import { SessionManager } from '../../core/session/SessionManager'
 import { RouteNames } from '../../core/router/RouteNames'
 import { ImageEditorParams, ImageEditorResult, IMAGE_EDITOR_DONE_EVENT } from '../imageeditor/models/ImageEditorParams'
 import { ImageActionDialog } from '../../common/ui/ImageActionDialog'
-import { ChatUseCase } from './ChatUseCase'
 import { VoiceRecorderService } from '../../common/voice/VoiceRecorderService'
 import { VoicePlayerService } from '../../common/voice/VoicePlayerService'
 import { AsrService } from '../../common/voice/AsrService'
@@ -31,7 +29,9 @@ import { ensureMicPermission } from '../../common/voice/VoicePermission'
 import { RecordPanelState } from '../../common/ui/VoiceRecordPanel'
 import { VoiceRecordResult } from '../../common/voice/VoiceRecorderService'
 import { DownloadUtil } from '../../common/utils/DownloadUtil'
-
+import { parseCard, ChatCard, CardType } from '../../domain/models/ChatCard'
+import { common, Want } from '@kit.AbilityKit'
+import { BusinessError } from '@kit.BasicServicesKit'
 /** ⭐ 一个"进行中的对话回合"：用户消息 + 助手占位（两者都持有引用） */
 interface PendingTurn {
   user: ChatMessage
@@ -64,6 +64,7 @@ export struct ChatPage {
   @State private partialText: string = ''
   @State private playingMsgId: string = ''
   @State private aiReadingId: string = ''      // 正在 TTS 播报的 assistant 消息 id
+  @State private jobProgressMap: Map<string, number> = new Map()
 
   private recorder: VoiceRecorderService = new VoiceRecorderService()
   private player: VoicePlayerService = new VoicePlayerService()
@@ -76,8 +77,8 @@ export struct ChatPage {
   private voiceStarting: boolean = false
   private voicePendingEnd: boolean | null = null   // null=无挂起, false=松手发送, true=松手取消
   private readingTimer: number = 0      // ⭐ TTS 朗读估算定时器
-
-
+  // 类字段
+  private pollingTimers: Map<string, number> = new Map()
   private scroller: Scroller = new Scroller()
   private currentRequest: http.HttpRequest | null = null
 
@@ -120,6 +121,9 @@ export struct ChatPage {
 
   aboutToDisappear(): void {
     this.unbindEditorListener()
+    // ⭐ 清理所有轮询定时器
+    this.pollingTimers.forEach((timer: number) => { clearTimeout(timer) })
+    this.pollingTimers.clear()
   }
 
   private unbindEditorListener(): void {
@@ -550,6 +554,198 @@ export struct ChatPage {
     else if (type === MessageActionType.REGENERATE) this.regenerate(msg)
     else if (type === MessageActionType.SHARE) promptAction.openToast({ message: '分享开发中' })
   }
+
+
+
+  /** ⭐ 卡片动作：用户点击卡片按钮 */
+  async onCardAction(
+    cardId: string,
+    cardType: string,
+    optionKey: string,
+    text: string,
+    assistantMsg: ChatMessage,
+  ): Promise<void> {
+    if (this.isLoadingNow()) return
+
+    const requestSessionId = this.currentSessionId
+    const clientId = this.chatVM.genClientId()
+
+    // 追加一条新的 assistant 占位消息
+    const newAssistant = this.chatVM.createAssistantPlaceholder()
+    this.messages.push(newAssistant)
+    this.messages = [...this.messages]
+    this._startRequest(requestSessionId, assistantMsg, newAssistant)
+    this.loadingSessionId = requestSessionId
+    this.scrollToBottom()
+
+    try {
+      await this.chatVM.sendAction(
+        requestSessionId,
+        cardId,
+        cardType,
+        optionKey,
+        text,
+        clientId,
+        newAssistant,
+        () => {
+          if (this.currentSessionId === requestSessionId) {
+            this.messages = [...this.messages]
+            this.scrollToBottom()
+          }
+        },
+        (info) => {
+          newAssistant.completed = true
+          if (this.currentSessionId === requestSessionId) {
+            this.messages = [...this.messages]
+          }
+        },
+        () => {
+          this.loadingSessionId = ''
+          this._finishRequest(requestSessionId)
+          // ⭐ 检查新消息里是否有 progress 卡片，有就启动轮询
+          this._scanAndStartPolling(newAssistant)
+        },
+      )
+    } catch (e) {
+      Logger.e(`onCardAction 失败: ${(e as Error).message}`)
+      this.loadingSessionId = ''
+      this._finishRequest(requestSessionId)
+    }
+  }
+
+  /** ⭐ 扫描消息，找到 progress 卡片就启动轮询 */
+  private _scanAndStartPolling(msg: ChatMessage): void {
+    if (msg.cardJson.length === 0) return
+    const card = parseCard(msg.cardJson)
+    if (!card) return
+    if (card.card_type !== CardType.PROGRESS) return
+    if (!card.extra || !card.extra.task_id) return
+
+    const taskId = card.extra.task_id
+    if (this.pollingTimers.has(taskId)) return
+
+    Logger.i(`[ChatPage] 启动进度轮询 taskId=${taskId}`)
+    this._pollJob(msg, taskId)
+  }
+
+
+  /** ⭐ 轮询任务进度 */
+  private _pollJob(msg: ChatMessage, taskId: string): void {
+    const tick = async () => {
+      try {
+        const resp = await this.chatVM.getJobStatus(taskId)
+        const status = resp.status ?? ''
+        const progress = resp.progress ?? 0
+        const resultUrl = resp.result_url ?? ''
+        const errorMsg = resp.error ?? ''
+
+        const card = parseCard(msg.cardJson)
+        if (card) {
+          if (status === 'done' && resultUrl.length > 0) {
+            const resultCard: ChatCard = {
+              card_id: card.card_id,
+              card_type: CardType.RESULT,
+              title: '视频生成完成',
+              description: '点击下方播放查看',
+              items: [],
+              extra: { task_id: taskId, video_url: resultUrl },
+            }
+            msg.cardJson = JSON.stringify(resultCard)
+            this.messages = [...this.messages]
+            this._stopPolling(taskId)
+            return
+          } else if (status === 'failed' || status === 'canceled') {
+            const errorCard: ChatCard = {
+              card_id: card.card_id,
+              card_type: CardType.ERROR,
+              title: '生成失败',
+              description: errorMsg.length > 0 ? errorMsg : '任务失败',
+              items: [],
+            }
+            msg.cardJson = JSON.stringify(errorCard)
+            this.messages = [...this.messages]
+            this._stopPolling(taskId)
+            return
+          } else {
+            if (card.extra) {
+              card.extra.progress = progress
+              card.extra.status = status
+            }
+            msg.cardJson = JSON.stringify(card)
+            this.messages = [...this.messages]
+          }
+        }
+
+        // ⭐ 未完成，继续轮询。先清掉旧 timer，再设置新 timer
+        const oldTimer = this.pollingTimers.get(taskId)
+        if (oldTimer !== undefined) clearTimeout(oldTimer)
+        const timer = setTimeout(tick, 3000)
+        this.pollingTimers.set(taskId, timer)
+      } catch (e) {
+        Logger.e(`轮询失败: ${(e as Error).message}`)
+        this._stopPolling(taskId)
+      }
+    }
+    tick()
+  }
+
+
+  private _stopPolling(taskId: string): void {
+    const t = this.pollingTimers.get(taskId)
+    if (t !== undefined) {
+      clearTimeout(t)
+      this.pollingTimers.delete(taskId)
+    }
+  }
+
+  /** ⭐ 下载视频 */
+  async onDownloadVideo(url: string): Promise<void> {
+    // 复用现有的 handleDownload，或直接打开外部浏览器
+    // 简单点：提示用户
+    promptAction.openToast({ message: '视频 URL 已准备好：' + url })
+  }
+
+
+  /** ⭐ 用系统播放器打开视频 */
+  async onPlayVideo(url: string): Promise<void> {
+    Logger.i(`[ChatPage] onPlayVideo url=${url}`)
+    if (!url || url.length === 0) {
+      promptAction.openToast({ message: '视频 URL 为空' })
+      return
+    }
+
+    const ctx = getContext(this) as common.UIAbilityContext
+
+    // 优先尝试用系统视频播放器打开
+    try {
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: url,
+        type: 'video/mp4'
+      }
+      await ctx.startAbility(want)
+      Logger.i('[ChatPage] onPlayVideo startAbility ok')
+      return
+    } catch (e) {
+      const err = e as BusinessError
+      Logger.e(`[ChatPage] onPlayVideo 失败 code=${err.code} msg=${err.message}`)
+    }
+
+    // 兜底：用浏览器打开
+    try {
+      const wantBrowser: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: url
+      }
+      await ctx.startAbility(wantBrowser)
+    } catch (e) {
+      const err = e as BusinessError
+      promptAction.openToast({ message: `无法打开视频: ${err.message}` })
+    }
+  }
+
 
   async onCameraOrAlbum(): Promise<void> {
     const files = await this.fileVM.pickImages(3)
@@ -1032,7 +1228,11 @@ export struct ChatPage {
                   onAction: (t: string) => { this.handleAction(t, msg) },
                   onPreviewImage: (imageUrl: string) => {
                     this.previewUrl = imageUrl
-                  }
+                  },
+                  onCardAction: (cardId: string, cardType: string, optionKey: string, text: string) => {
+                    this.onCardAction(cardId, cardType, optionKey, text, msg)
+                  },
+                  onPlayVideo: (url: string) => this.onPlayVideo(url),
                 })
               }
             }, (msg: ChatMessage) => {

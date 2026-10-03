@@ -36,9 +36,10 @@ interface MultipartHeader {
 export interface ProcessFileStreamCallbacks {
   onChunk: (content: string) => void
   onImage: (base64: string) => void
-  onDone?: (info: SseDoneInfo) => void          // ⭐ 新增
+  onDone?: (info: SseDoneInfo) => void // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
+  onCard?: (cardJson: string) => void // ⭐ 新增
 }
 
 // ⭐ 新增：SSE 单条 payload 的解析结构
@@ -46,13 +47,13 @@ interface SseUploadPayload {
   type?: string
   content?: string
   image_base64?: string
+  card_json?: string // ⭐ 新增
   message_id?: number
   duration_ms?: number
   error?: string
 }
 
 export class HttpClient {
-
   // ==================== JSON POST ====================
   static async post<T>(service: ServiceName, path: string, body?: Object): Promise<T> {
     const url = ServiceRouter.getBaseUrl(service) + path
@@ -106,10 +107,11 @@ export class HttpClient {
     path: string,
     body: Object,
     onChunk: (text: string) => void,
-    onImage: (base64: string) => void,                // ⭐ 新增
+    onImage: (base64: string) => void, // ⭐ 新增
     onDone: ((info: SseDoneInfo) => void) | undefined,
     onFinish: () => void,
-    onError: (err: string) => void
+    onError: (err: string) => void,
+    onCard?: (cardJson: string) => void // ⭐ 新增参数
   ): http.HttpRequest {
     const url = ServiceRouter.getBaseUrl(service) + path
     Logger.i(`STREAM ${service} ${url}`)
@@ -119,13 +121,25 @@ export class HttpClient {
 
     // ⭐ 兼容两路回调：把 onDone 桥接为 ProcessFileStreamCallbacks 形态
     const bridge: ProcessFileStreamCallbacks = {
-      onChunk: (content: string) => { onChunk(content) },
-      onImage: (base64: string) => { onImage(base64) },   // ⭐ 从丢弃改为透传
+      onChunk: (content: string) => {
+        onChunk(content)
+      },
+      onImage: (base64: string) => {
+        onImage(base64)
+      }, // ⭐ 从丢弃改为透传
       onDone: onDone
-        ? (info: SseDoneInfo) => { onDone(info) }
+        ? (info: SseDoneInfo) => {
+          onDone(info)
+        }
         : undefined,
-      onFinish: () => { /* 由 dataEnd 控制 */ },
-      onError: (err: string) => { onError(err) },
+      onCard: onCard, // 旧调用者不传 onCard，保持兼容
+      onFinish: () => { /* 由 dataEnd 控制 */
+      },
+      onError: (err: string) => {
+        onError(err)
+      },
+
+
     }
 
     let buffer = ''
@@ -295,7 +309,8 @@ export class HttpClient {
         try {
           const obj: SseUploadPayload = JSON.parse(buffer) as SseUploadPayload
           HttpClient._dispatchSse(obj, cb)
-        } catch (_) { /* ignore */ }
+        } catch (_) { /* ignore */
+        }
       }
       cb.onFinish()
       req.destroy()
@@ -320,9 +335,13 @@ export class HttpClient {
 
   // ---------- ⭐ 私有：解析单条 SSE ----------
   private static _handleSseLine(raw: string, cb: ProcessFileStreamCallbacks): void {
-    if (!raw.startsWith('data:')) return
+    if (!raw.startsWith('data:')) {
+      return
+    }
     const payload = raw.substring(5).trim()
-    if (!payload || payload === '[DONE]') return
+    if (!payload || payload === '[DONE]') {
+      return
+    }
 
     try {
       const obj: SseUploadPayload = JSON.parse(payload) as SseUploadPayload
@@ -344,7 +363,11 @@ export class HttpClient {
         })
       }
     } else if (obj.type === 'image' && obj.image_base64) {
-      cb.onImage(obj.image_base64)      // ⭐ 图片走这个回调
+      cb.onImage(obj.image_base64) // ⭐ 图片走这个回调
+    } else if (obj.type === 'card' && obj.card_json) { // ⭐ 新增
+      if (cb.onCard) {
+        cb.onCard(obj.card_json)
+      }
     } else if (obj.content) {
       cb.onChunk(obj.content)
     }

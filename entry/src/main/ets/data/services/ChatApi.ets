@@ -4,22 +4,49 @@ import {
 } from '../../common/network/HttpClient'
 import { ApiUrls } from '../../common/network/ApiUrls'
 import { ChatRequestDto, ProcessFileResponseDto, OcrResponseDto } from '../dto/Types'
+import { CardActionDto } from '../../domain/models/CardActionDto'
 import { SseDoneInfo } from '../../common/network/HttpClient'
 
 
 export interface StreamBridgeCallbacks {
   onChunk: (text: string) => void
-  onImage: (base64: string) => void        // ⭐ 新增
-  onDone?: (info: SseDoneInfo) => void // ⭐ 新增
+  onImage: (base64: string) => void
+  onDone?: (info: SseDoneInfo) => void
+  onCard?: (cardJson: string) => void       // ⭐ 新增
   onFinish: () => void
   onError: (err: string) => void
 }
 
 
 export class ChatApi {
-  // body 里已含 client_id
+
   static stream(body: ChatRequestDto, cb: StreamBridgeCallbacks): http.HttpRequest {
-    return HttpClient.streamPost('agent', ApiUrls.CHAT, body, cb.onChunk,cb.onImage, cb.onDone, cb.onFinish, cb.onError)
+    return HttpClient.streamPost(
+      'agent',
+      ApiUrls.CHAT,
+      body,
+      cb.onChunk,
+      cb.onImage,
+      cb.onDone,
+      cb.onFinish,
+      cb.onError,
+      cb.onCard,                            // ⭐ 新参数
+    )
+  }
+
+  // ⭐ 新增：卡片动作
+  static sendAction(body: CardActionDto, cb: StreamBridgeCallbacks): http.HttpRequest {
+    return HttpClient.streamPost(
+      'agent',
+      ApiUrls.CHAT_ACTION,
+      body,
+      cb.onChunk,
+      cb.onImage,
+      cb.onDone,
+      cb.onFinish,
+      cb.onError,
+      cb.onCard,
+    )
   }
 
   static processFile(
@@ -38,7 +65,6 @@ export class ChatApi {
     return HttpClient.uploadFiles<OcrResponseDto>('agent', ApiUrls.OCR, files, fields)
   }
 
-  // fields 由调用方构造，已含 client_id
   static processFileStream(
     fields: FormField[],
     files: HttpUploadFile[],

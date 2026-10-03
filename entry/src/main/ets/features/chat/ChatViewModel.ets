@@ -4,11 +4,16 @@ import { ChatMessage } from '../../domain/models/ChatMessage'
 import { FileItem } from '../../domain/models/FileItem'
 import { ConversationViewModel } from '../conversation/ConversationViewModel'
 import { Logger } from '../../common/logger/Logger'
-import { SseDoneInfo } from '../../common/network/HttpClient'      // ⭐ 新增 import
+import { HttpClient, SseDoneInfo } from '../../common/network/HttpClient'
+import { CardActionDto } from '../../domain/models/CardActionDto'
+import { JobStatusResp } from '../../domain/models/ChatCard'
+import { StreamCallbacks } from '../../domain/repositories/IChatRepository'
+
 
 export interface SendStreamOptionsExt extends SendStreamOptions {
   onSessionIdChange?: (sid: string) => void
 }
+
 
 export class ChatViewModel {
 
@@ -77,10 +82,21 @@ export class ChatViewModel {
       assistantMsg: opt.assistantMsg,
       onRefresh: opt.onRefresh,
       onScroll: opt.onScroll,
-      onDone: opt.onDone,                        // ⭐ 透传
+      onDone: opt.onDone,
+      onCard: opt.onCard,                        // ⭐ 关键透传
       onFinish: opt.onFinish,
     }
     return this.uc.sendStream(finalOpt)
+  }
+
+  /**
+   * ⭐ 查询任务状态
+   * 返回显式接口，避免 Record<string, Object> 触发 ArkTS 索引签名错误
+   */
+  async getJobStatus(taskId: string): Promise<JobStatusResp> {
+    const path = `/agent/v1/chat/job/${taskId}`
+    const resp = await HttpClient.get<JobStatusResp>('agent', path)
+    return resp
   }
 
   async sendFilesStream(
@@ -95,7 +111,6 @@ export class ChatViewModel {
   ): Promise<http.HttpRequest> {
     if (sessionId && sessionId.length > 0) {
       this.currentSessionId = sessionId
-      Logger.i(`[ChatVM] sendFilesStream 使用外部 sessionId: ${sessionId}`)
     }
     const sid = await this.ensureSessionId()
 
@@ -106,13 +121,12 @@ export class ChatViewModel {
       files: files,
       assistantMsg: assistantMsg,
       onRefresh: onRefresh,
-      onDone: onDone,                            // ⭐ 补上这一行
+      onDone: onDone,
       onFinish: onFinish,
     }
     return this.uc.sendFilesStream(opt)
   }
 
-  /** @deprecated 用 sendFilesStream */
   async sendFiles(sessionId: string, text: string, files: FileItem[]): Promise<ChatMessage> {
     if (sessionId && sessionId.length > 0) {
       this.currentSessionId = sessionId
@@ -123,5 +137,56 @@ export class ChatViewModel {
 
   async ocr(files: FileItem[]): Promise<ChatMessage> {
     return this.uc.ocr(files)
+  }
+
+  async sendAction(
+    sessionId: string,
+    cardId: string,
+    cardType: string,
+    optionKey: string,
+    text: string,
+    clientId: string,
+    assistantMsg: ChatMessage,
+    onRefresh: () => void,
+    onDone: (info: SseDoneInfo) => void,
+    onFinish: () => void,
+  ): Promise<http.HttpRequest> {
+    if (sessionId && sessionId.length > 0) {
+      this.currentSessionId = sessionId
+    }
+    const sid = await this.ensureSessionId()
+
+    const dto: CardActionDto = {
+      session_id: sid,
+      card_id: cardId,
+      card_type: cardType,
+      option_key: optionKey,
+      text: text,
+      client_id: clientId,
+    }
+
+    const cb: StreamCallbacks = {
+      onChunk: (chunk: string) => {
+        assistantMsg.content += chunk
+        onRefresh()
+      },
+      onImage: (base64: string) => {
+        assistantMsg.imageBase64 = base64
+        onRefresh()
+      },
+      onCard: (cardJson: string) => {
+        assistantMsg.cardJson = cardJson
+        onRefresh()
+      },
+      onDone: onDone,
+      onFinish: onFinish,
+      onError: (err: string) => {
+        assistantMsg.content = `[错误: ${err}]`
+        assistantMsg.completed = true
+        onRefresh()
+      },
+    }
+
+    return this.uc.sendAction(dto, cb)
   }
 }

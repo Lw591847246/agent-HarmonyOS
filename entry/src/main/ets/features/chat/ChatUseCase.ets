@@ -1,37 +1,44 @@
 import http from '@ohos.net.http'
 import { ChatRepositoryImpl } from '../../data/repositories/ChatRepositoryImpl'
-import { IChatRepository } from '../../domain/repositories/IChatRepository'
+import { IChatRepository, StreamCallbacks } from '../../domain/repositories/IChatRepository'
 import { ChatMessage } from '../../domain/models/ChatMessage'
 import { FileItem } from '../../domain/models/FileItem'
+import { CardActionDto } from '../../domain/models/CardActionDto'
 import { StreamParser, StreamParseState } from '../../common/network/StreamParser'
 import { StreamJsonResponseDto } from '../../data/dto/Types'
 import { DateUtil } from '../../common/utils/DateUtil'
 import { Logger } from '../../common/logger/Logger'
 import { SseDoneInfo } from '../../common/network/HttpClient'
 
+
 let msgCounter: number = 0
+
 
 export interface SendStreamOptions {
   text: string
   sessionId: string
-  clientId: string          // ⭐ 新增
+  clientId: string
   assistantMsg: ChatMessage
   onRefresh: () => void
   onScroll: () => void
-  onDone: (info: SseDoneInfo) => void         // ⭐ 新增
+  onDone: (info: SseDoneInfo) => void
+  onCard?: (cardJson: string) => void          // ⭐ 新增
   onFinish: () => void
 }
+
 
 export interface SendFilesStreamOptions {
   sessionId: string
   text: string
-  clientId: string          // ⭐ 新增
+  clientId: string
   files: FileItem[]
   assistantMsg: ChatMessage
   onRefresh: () => void
-  onDone: (info: SseDoneInfo) => void         // ⭐ 新增
+  onDone: (info: SseDoneInfo) => void
+  onCard?: (cardJson: string) => void          // ⭐ 新增
   onFinish: () => void
 }
+
 
 export class ChatUseCase {
   private repo: IChatRepository
@@ -40,7 +47,6 @@ export class ChatUseCase {
     this.repo = new ChatRepositoryImpl(context)
   }
 
-  /** ⭐ 生成客户端幂等 ID */
   static genClientId(): string {
     return `${Date.now()}_${Math.floor(Math.random() * 0xffffff).toString(36)}`
   }
@@ -116,12 +122,18 @@ export class ChatUseCase {
         opt.onScroll()
       },
 
-      // ⭐ 新增：图片事件 → 塞到 assistantMsg，前端立刻渲染
       onImage: (base64: string) => {
         opt.assistantMsg.imageBase64 = this.toDataUri(base64)
         if (!opt.assistantMsg.content) {
           opt.assistantMsg.content = '[图片已生成]'
         }
+        opt.onRefresh()
+        opt.onScroll()
+      },
+
+      // ⭐ 新增：卡片事件
+      onCard: (cardJson: string) => {
+        opt.assistantMsg.cardJson = cardJson
         opt.onRefresh()
         opt.onScroll()
       },
@@ -133,7 +145,7 @@ export class ChatUseCase {
             opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
           }
           opt.assistantMsg.completed = true
-          Logger.i(`[finalize] imgLen=${opt.assistantMsg.imageBase64.length}`)
+          Logger.i(`[finalize] imgLen=${opt.assistantMsg.imageBase64.length} cardLen=${opt.assistantMsg.cardJson.length}`)
           opt.onRefresh()
           opt.onFinish()
         }
@@ -179,7 +191,11 @@ export class ChatUseCase {
         opt.assistantMsg.imageBase64 = this.toDataUri(base64)
         opt.onRefresh()
       },
-      onDone: (info) => { opt.onDone(info) },   // ⭐ 透传
+      onCard: (cardJson: string) => {          // ⭐ 新增
+        opt.assistantMsg.cardJson = cardJson
+        opt.onRefresh()
+      },
+      onDone: (info) => { opt.onDone(info) },
       onFinish: () => {
         if (opt.assistantMsg.duration === 0) {
           opt.assistantMsg.duration = DateUtil.elapsedSeconds(startMs)
@@ -197,8 +213,13 @@ export class ChatUseCase {
     })
   }
 
-  /** @deprecated 用 sendFilesStream */
+  // ⭐ 新增：卡片动作
+  sendAction(dto: CardActionDto, cb: StreamCallbacks): http.HttpRequest {
+    return this.repo.sendAction(dto, cb)
+  }
+
   async sendFiles(sessionId: string, text: string, files: FileItem[]): Promise<ChatMessage> {
+    // ... 保持不变
     const startMs = DateUtil.nowMs()
     const msg = ChatUseCase.createMessage('assistant', '')
     msg.thinkingDone = true
@@ -238,6 +259,7 @@ export class ChatUseCase {
   }
 
   async ocr(files: FileItem[]): Promise<ChatMessage> {
+    // ... 保持不变
     const msg = ChatUseCase.createMessage('assistant', '')
     msg.thinkingDone = true
     try {

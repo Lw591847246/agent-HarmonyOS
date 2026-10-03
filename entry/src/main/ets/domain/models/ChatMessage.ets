@@ -19,4 +19,8 @@ export class ChatMessage {
   isVoice: boolean = false
   voicePath: string = ''       // 沙箱缓存路径（.pcm）
   voiceDuration: number = 0    // 秒
+
+
+  // ⭐ 新增：卡片消息时，这里存卡片 JSON 字符串
+  cardJson: string = ''
 }

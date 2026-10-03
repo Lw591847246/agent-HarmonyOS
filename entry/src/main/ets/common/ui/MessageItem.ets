@@ -4,7 +4,8 @@ import { buildAssistantActions, buildUserActions, MessageAction } from './Messag
 import { MarkdownParser, MdLine } from '../../common/utils/MarkdownUtil'
 import { Logger } from '../../common/logger/Logger'
 import { VoiceMessageBubble } from './VoiceMessageBubble'
-
+import { ChatCard, parseCard } from '../../domain/models/ChatCard'
+import { CardRenderer } from './CardRenderer'
 
 @Component
 export struct MessageItem {
@@ -18,6 +19,10 @@ export struct MessageItem {
   @Prop isVoicePlaying: boolean = false
   @Prop isAiReading: boolean = false
 
+
+  onCardAction: (cardId: string, cardType: string, optionKey: string, text: string) => void =
+    (cardId: string, cardType: string, optionKey: string, text: string) => {}
+  onPlayVideo: (url: string) => void = (url: string) => {}
   onDownload: (relativeUrl: string) => void = () => {}
   onVoicePlay: () => void = () => {}
   onVoiceStop: () => void = () => {}
@@ -36,6 +41,7 @@ export struct MessageItem {
     return true
   }
 
+
   /**
    * ⭐ 从消息内容里提取下载 URL
    * 匹配 [DL:/agent/v1/ppt/download/xxx/yyy.pptx]
@@ -52,6 +58,28 @@ export struct MessageItem {
   private _stripDownloadMarker(content: string): string {
     if (!content) return ''
     return content.replace(/\n?\[DL:[^\]]+\]\n?/g, '').trim()
+  }
+
+  @Builder
+  renderCardDynamic() {
+    // ⭐ ForEach trick：每次 build 时重新解析 cardJson
+    ForEach([parseCard(this.msg.cardJson)], (card: ChatCard | null) => {
+      if (card !== null) {
+        CardRenderer({
+          card: card,
+          onCardAction: (cardId: string, cardType: string, optionKey: string, text: string) => {
+            this.onCardAction(cardId, cardType, optionKey, text)
+          },
+          onPlay: (url: string) => this.onPlayVideo(url)
+        })
+      }
+    }, (card: ChatCard | null) => {
+      // ⭐ key 里带 card_id + progress + status，保证内容变化时重建
+      if (card === null) return 'null'
+      const prog = card.extra && card.extra.progress !== undefined ? card.extra.progress : 0
+      const st = card.extra && card.extra.status ? card.extra.status : ''
+      return `${card.card_id}_${card.card_type}_${prog}_${st}`
+    })
   }
 
 
@@ -199,8 +227,10 @@ export struct MessageItem {
               .width('100%').alignItems(HorizontalAlign.Start)
             }
 
-            // 正文
-            if (this.msg.content.length > 0) {
+            // ⭐ 卡片消息
+            if (this.msg.cardJson.length > 0) {
+              this.renderCardDynamic()
+            } else if (this.msg.content.length > 0) {
               Column() {
                 ForEach(MarkdownParser.parseLines(this._stripDownloadMarker(this.msg.content)), (line: MdLine) => {
                   this.renderMdLine(line)

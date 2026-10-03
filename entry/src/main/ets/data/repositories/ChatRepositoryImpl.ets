@@ -7,6 +7,8 @@ import {
   UploadFilesStreamCallbacks,
 } from '../../domain/repositories/IChatRepository'
 import { FileItem } from '../../domain/models/FileItem'
+import { CardActionDto } from '../../domain/models/CardActionDto'
+
 
 export class ChatRepositoryImpl implements IChatRepository {
   private context: Context
@@ -16,13 +18,25 @@ export class ChatRepositoryImpl implements IChatRepository {
   }
 
   stream(text: string, sessionId: string, clientId: string, cb: StreamCallbacks): http.HttpRequest {
-    // ⭐ body 里带上 client_id
     return ChatApi.stream({ text, session_id: sessionId, client_id: clientId }, {
       onChunk: cb.onChunk,
-      onImage: cb.onImage,                  // ⭐ 透传
+      onImage: cb.onImage,
       onDone: cb.onDone,
+      onCard: cb.onCard,                    // ⭐ 透传
       onFinish: cb.onFinish,
-      onError: cb.onError
+      onError: cb.onError,
+    })
+  }
+
+  // ⭐ 新增
+  sendAction(body: CardActionDto, cb: StreamCallbacks): http.HttpRequest {
+    return ChatApi.sendAction(body, {
+      onChunk: cb.onChunk,
+      onImage: cb.onImage,
+      onDone: cb.onDone,
+      onCard: cb.onCard,
+      onFinish: cb.onFinish,
+      onError: cb.onError,
     })
   }
 
@@ -37,7 +51,6 @@ export class ChatRepositoryImpl implements IChatRepository {
     files: FileItem[],
     cb: UploadFilesStreamCallbacks,
   ): http.HttpRequest {
-    // ⭐ 透传给 FileApi
     return FileApi.uploadAndProcessStream(this.context, sessionId, text, clientId, files, cb)
   }
 

@@ -11,4 +11,6 @@ export class ApiUrls {
   static readonly CONVERSATION_HISTORY = '/agent/v1/conversation'
   static readonly PROCESS_FILE = '/agent/v1/process-file'
   static readonly OCR = '/agent/v1/ocr'
+  static readonly CHAT_ACTION = '/agent/v1/chat/action'    // ⭐ 新增
+
 }
