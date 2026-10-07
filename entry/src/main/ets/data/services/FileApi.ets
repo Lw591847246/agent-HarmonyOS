@@ -1,112 +1,62 @@
-import { HttpUploadFile } from '../../common/network/HttpClient'
+import { FormField, HttpClient } from '../../common/network/HttpClient'
+import { ApiUrls } from '../../common/network/ApiUrls'
 import { FileItem } from '../../domain/models/FileItem'
-import { OcrResponseDto, ProcessFileResponseDto } from '../dto/Types'
 import { SandboxFileUtil } from '../../common/utils/SandboxFileUtil'
-import { ChatApi } from './ChatApi'
 import { Logger } from '../../common/logger/Logger'
-import http from '@ohos.net.http'
-import { FormField } from '../../common/network/HttpClient'
-import { UploadFilesStreamCallbacks } from '../../domain/repositories/IChatRepository'
-import { ProcessFileStreamCallbacks } from '../../common/network/HttpClient'
-
-export interface PreparedFiles {
-  httpFiles: HttpUploadFile[]
-  sandboxPaths: string[]
-}
+import { UploadAssetRespDto } from '../dto/Types'
+import fs from '@ohos.file.fs'
 
 export class FileApi {
 
-  static prepareFiles(context: Context, files: FileItem[]): PreparedFiles {
-    const httpFiles: HttpUploadFile[] = []
-    const sandboxPaths: string[] = []
-
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i]
-      const sandboxPath = SandboxFileUtil.copyToSandbox(context, f.uri, f.name)
-      if (!sandboxPath) {
-        Logger.e(`文件拷贝失败，跳过: ${f.name}`)
-        continue
-      }
-      const hf: HttpUploadFile = {
-        name: f.name,
-        uri: sandboxPath,
-        mimeType: SandboxFileUtil.guessMimeType(f.name)
-      }
-      httpFiles.push(hf)
-      sandboxPaths.push(sandboxPath)
-    }
-
-    const result: PreparedFiles = { httpFiles, sandboxPaths }
-    return result
-  }
-
-  static async uploadAndProcess(
+  /**
+   * ⭐ 通用上传：把本地文件上传到 /agent/v1/upload/asset
+   */
+  static async uploadAsset(
     context: Context,
     sessionId: string,
-    text: string,
+    file: FileItem
+  ): Promise<UploadAssetRespDto> {
+    const sandboxPath = SandboxFileUtil.copyToSandbox(context, file.uri, file.name)
+    if (!sandboxPath) {
+      throw new Error(`文件拷贝到沙箱失败: ${file.name}`)         // ⭐ 抛 Error
+    }
+    try {
+
+      const stat = fs.statSync(sandboxPath)
+      const sizeMB = stat.size / 1024 / 1024
+      Logger.i(`[FileApi] 上传文件 ${file.name} size=${sizeMB.toFixed(1)}MB`)
+
+      if (sizeMB > 50) {
+        throw new Error(`视频过大（${sizeMB.toFixed(1)}MB），请压缩到 50MB 以内或选择更短的视频`)
+      }
+
+
+      const fields: FormField[] = [
+        { key: 'session_id', value: sessionId }
+      ]
+      return await HttpClient.uploadSingleFile<UploadAssetRespDto>(
+        'agent',
+        ApiUrls.UPLOAD_ASSET,
+        sandboxPath,
+        file.name,
+        'file',
+        fields
+      )
+    } finally {
+      SandboxFileUtil.deleteFile(sandboxPath)
+    }
+  }
+
+  static async uploadAssetBatch(
+    context: Context,
+    sessionId: string,
     files: FileItem[]
-  ): Promise<ProcessFileResponseDto> {
-    const prepared = FileApi.prepareFiles(context, files)
-    if (prepared.httpFiles.length === 0) {
-      throw new Error('没有可上传的文件')
+  ): Promise<UploadAssetRespDto[]> {
+    const result: UploadAssetRespDto[] = []
+    for (let i = 0; i < files.length; i++) {
+      const r = await FileApi.uploadAsset(context, sessionId, files[i])
+      result.push(r)
     }
-    try {
-      return await ChatApi.processFile(sessionId, text, prepared.httpFiles)
-    } finally {
-      SandboxFileUtil.deleteFiles(prepared.sandboxPaths)
-    }
-  }
-
-  /** ⭐ 加 clientId 参数 */
-  static uploadAndProcessStream(
-    context: Context,
-    sessionId: string,
-    text: string,
-    clientId: string,          // ⭐ 新增
-    files: FileItem[],
-    cb: UploadFilesStreamCallbacks,
-  ): http.HttpRequest {
-    const prepared = FileApi.prepareFiles(context, files)
-
-    if (prepared.httpFiles.length === 0) {
-      const dummy = http.createHttp()
-      Promise.resolve().then(() => { cb.onError('没有可上传的文件') })
-      try { dummy.destroy() } catch (e) { /* ignore */ }
-      return dummy
-    }
-
-    // ⭐ fields 里带 client_id
-    const fields: FormField[] = [
-      { key: 'session_id', value: sessionId },
-      { key: 'text', value: text },
-      { key: 'client_id', value: clientId },
-    ]
-
-    const streamCb: ProcessFileStreamCallbacks = {
-      onChunk: (content: string) => { cb.onChunk(content) },
-      onImage: (base64: string) => { cb.onImage(base64) },
-      onFinish: () => {
-        SandboxFileUtil.deleteFiles(prepared.sandboxPaths)
-        cb.onFinish()
-      },
-      onError: (err: string) => {
-        SandboxFileUtil.deleteFiles(prepared.sandboxPaths)
-        cb.onError(err)
-      },
-    }
-
-    return ChatApi.processFileStream(fields, prepared.httpFiles, streamCb)
-  }
-
-  static async ocr(context: Context, files: FileItem[]): Promise<OcrResponseDto> {
-    const prepared = FileApi.prepareFiles(context, files)
-    if (prepared.httpFiles.length === 0) {
-      throw new Error('没有可上传的文件')
-    }
-    try {
-      return await ChatApi.ocr(prepared.httpFiles)
-    } finally {
-      SandboxFileUtil.deleteFiles(prepared.sandboxPaths)
-    }
+    return result
   }
 }

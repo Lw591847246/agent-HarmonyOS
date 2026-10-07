@@ -14,6 +14,22 @@ export class FileViewModel {
     this.ctx = ctx
   }
 
+  /** ⭐ 新增：从相册选视频 */
+  async pickVideo(max: number = 1): Promise<FileItem[]> {
+    try {
+      const p = new photoAccessHelper.PhotoViewPicker()
+      const r = await p.select({
+        maxSelectNumber: max,
+        MIMEType: photoAccessHelper.PhotoViewMIMETypes.VIDEO_TYPE
+      })
+      return FileUseCase.fromUriList(r.photoUris)
+    } catch (e) {
+      Logger.e('选择视频失败: ' + (e as Error).message)
+      return []
+    }
+  }
+
+
   /** 从相册选图 */
   async pickImages(max: number = 3): Promise<FileItem[]> {
     try {

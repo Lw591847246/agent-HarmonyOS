@@ -19,42 +19,43 @@ export struct MessageItem {
   @Prop isVoicePlaying: boolean = false
   @Prop isAiReading: boolean = false
 
+  // ⭐ 扩为 5 参数
+  onCardAction: (
+    cardId: string,
+    cardType: string,
+    optionKey: string,
+    text: string,
+    fileId?: string
+  ) => void = (
+    cardId: string, cardType: string, optionKey: string,
+    text: string, fileId?: string
+  ) => {}
 
-  onCardAction: (cardId: string, cardType: string, optionKey: string, text: string) => void =
-    (cardId: string, cardType: string, optionKey: string, text: string) => {}
   onPlayVideo: (url: string) => void = (url: string) => {}
   onDownload: (relativeUrl: string) => void = () => {}
   onVoicePlay: () => void = () => {}
   onVoiceStop: () => void = () => {}
   onToggleAiReading: () => void = () => {}
+  onPickUpload: (kind: string, cardId: string, cardType: string) => void =
+    (kind: string, cardId: string, cardType: string) => {}
 
-  /** ⭐ 是否可以朗读：排除图片类任务和纯占位内容 */
+
   private canRead(): boolean {
     if (!this.msg.completed) return false
     if (this.msg.content.length === 0) return false
     if (this.msg.content === '[图片已生成]') return false
-
     const hasImage = this.msg.imageBase64.length > 0
       || (this.msg.thumbUrl && this.msg.thumbUrl.length > 0)
-    // 有图片且文字很短（<10）→ 视为图片任务，无朗读价值
     if (hasImage && this.msg.content.length < 10) return false
     return true
   }
 
-
-  /**
-   * ⭐ 从消息内容里提取下载 URL
-   * 匹配 [DL:/agent/v1/ppt/download/xxx/yyy.pptx]
-   */
   private _extractDownloadUrl(content: string): string {
     if (!content) return ''
     const m = content.match(/\[DL:([^\]]+)\]/)
     return m ? m[1] : ''
   }
 
-  /**
-   * ⭐ 把 [DL:xxx] 标记从显示文本里删掉（连带前后多余的换行）
-   */
   private _stripDownloadMarker(content: string): string {
     if (!content) return ''
     return content.replace(/\n?\[DL:[^\]]+\]\n?/g, '').trim()
@@ -62,26 +63,43 @@ export struct MessageItem {
 
   @Builder
   renderCardDynamic() {
-    // ⭐ ForEach trick：每次 build 时重新解析 cardJson
     ForEach([parseCard(this.msg.cardJson)], (card: ChatCard | null) => {
       if (card !== null) {
         CardRenderer({
           card: card,
-          onCardAction: (cardId: string, cardType: string, optionKey: string, text: string) => {
-            this.onCardAction(cardId, cardType, optionKey, text)
+          // ⭐ 加 fileId 透传
+          onCardAction: (
+            cardId: string,
+            cardType: string,
+            optionKey: string,
+            text: string,
+            fileId?: string
+          ) => {
+            this.onCardAction(cardId, cardType, optionKey, text, fileId)
+          },
+          onPickUpload: (kind: string, cardId: string, cardType: string) => {
+            this.onPickUpload(kind, cardId, cardType)
           },
           onPlay: (url: string) => this.onPlayVideo(url)
         })
       }
     }, (card: ChatCard | null) => {
-      // ⭐ key 里带 card_id + progress + status，保证内容变化时重建
       if (card === null) return 'null'
       const prog = card.extra && card.extra.progress !== undefined ? card.extra.progress : 0
       const st = card.extra && card.extra.status ? card.extra.status : ''
-      return `${card.card_id}_${card.card_type}_${prog}_${st}`
+      // ⭐ face_swap_task 卡片：把每个 task 的状态拼进 key，触发重建
+      let tasksKey = ''
+      if (card.tasks && card.tasks.length > 0) {
+        const parts: string[] = []
+        for (let i = 0; i < card.tasks.length; i++) {
+          const t = card.tasks[i]
+          parts.push(`${t.task_id}_${t.status}_${t.progress}`)
+        }
+        tasksKey = parts.join('|')
+      }
+      return `${card.card_id}_${card.card_type}_${prog}_${st}_${tasksKey}`
     })
   }
-
 
   @Builder
   renderMdLine(line: MdLine) {
@@ -108,26 +126,18 @@ export struct MessageItem {
     }
   }
 
-  /** ⭐ 下载按钮（仅当消息里含下载链接时显示） */
-  /** ⭐ 下载按钮：仅当消息里含 [DL:...] 标记时显示 */
   @Builder
   renderDownloadButton() {
     if (this.msg.role === 'assistant') {
       if (this._extractDownloadUrl(this.msg.content).length > 0) {
         Row({ space: 6 }) {
           Image($r('app.media.ic_download'))
-            .width(16)
-            .height(16)
-            .objectFit(ImageFit.Contain)
+            .width(16).height(16).objectFit(ImageFit.Contain)
           Text('下载')
-            .fontSize(13)
-            .fontColor(Color.White)
-            .fontWeight(FontWeight.Medium)
+            .fontSize(13).fontColor(Color.White).fontWeight(FontWeight.Medium)
         }
         .padding({ left: 12, right: 14, top: 7, bottom: 7 })
-        .borderRadius(8)
-        .backgroundColor('#4A90E2')
-        .margin({ top: 8 })
+        .borderRadius(8).backgroundColor('#4A90E2').margin({ top: 8 })
         .onClick(() => {
           const url = this._extractDownloadUrl(this.msg.content)
           if (url) this.onDownload(url)
@@ -135,7 +145,6 @@ export struct MessageItem {
       }
     }
   }
-
 
   build() {
     Column() {
@@ -149,8 +158,7 @@ export struct MessageItem {
               onStop: () => this.onVoiceStop()
             })
           }
-          .width('100%')
-          .justifyContent(FlexAlign.End)
+          .width('100%').justifyContent(FlexAlign.End)
         } else {
           Row() {
             Column() {
@@ -175,7 +183,6 @@ export struct MessageItem {
       } else {
         Row() {
           Column() {
-            // 思考过程
             if (!this.msg.completed || this.msg.thinking.length > 0) {
               Text(this.msg.completed ? '已思考' : '正在思考...')
                 .fontSize(12).fontColor('#888').width('100%').margin({ bottom: 4 })
@@ -189,32 +196,20 @@ export struct MessageItem {
               }
             }
 
-            // 实时生成图片
             if (this.msg.imageBase64.length > 0) {
               Image(this.msg.imageBase64)
-                .width(200).height(200)
-                .borderRadius(8)
-                .margin({ bottom: 8 })
-                .objectFit(ImageFit.Cover)
-                .backgroundColor('#eee')
-                .onClick(() => {
-                  this.onPreviewImage(this.msg.imageBase64)
-                })
-                .onError(() => {
-                  Logger.e(`[MessageItem] 实时图加载失败`)
-                })
+                .width(200).height(200).borderRadius(8).margin({ bottom: 8 })
+                .objectFit(ImageFit.Cover).backgroundColor('#eee')
+                .onClick(() => { this.onPreviewImage(this.msg.imageBase64) })
+                .onError(() => { Logger.e(`[MessageItem] 实时图加载失败`) })
             } else if (this.msg.thumbUrl && this.msg.thumbUrl.length > 0) {
               Column() {
                 Image(this.msg.thumbUrl)
-                  .width(200).height(200)
-                  .borderRadius(8)
-                  .margin({ bottom: 8 })
-                  .objectFit(ImageFit.Cover)
-                  .backgroundColor('#eee')
+                  .width(200).height(200).borderRadius(8).margin({ bottom: 8 })
+                  .objectFit(ImageFit.Cover).backgroundColor('#eee')
                   .gesture(
                     TapGesture({ count: 2 })
                       .onAction(() => {
-                        Logger.i(`[MessageItem] 双击预览, imageUrl=${this.msg.imageUrl}, thumbUrl=${this.msg.thumbUrl}`)
                         this.onPreviewImage(this.msg.imageUrl)
                       })
                   )
@@ -227,7 +222,6 @@ export struct MessageItem {
               .width('100%').alignItems(HorizontalAlign.Start)
             }
 
-            // ⭐ 卡片消息
             if (this.msg.cardJson.length > 0) {
               this.renderCardDynamic()
             } else if (this.msg.content.length > 0) {
@@ -244,7 +238,7 @@ export struct MessageItem {
               }.width('100%')
             }
             this.renderDownloadButton()
-            // 底部操作栏 + 朗读按钮 + 耗时
+
             if (this.msg.completed || this.msg.duration > 0) {
               Row() {
                 if (this.msg.completed) {
@@ -254,14 +248,12 @@ export struct MessageItem {
                   })
                 }
 
-                // ⭐ 朗读按钮：只有可朗读内容才显示
                 if (this.canRead()) {
                   Row({ space: 3 }) {
                     Image(this.isAiReading
                       ? $r('app.media.ic_speaker_stop')
                       : $r('app.media.ic_speaker'))
-                      .width(14).height(14)
-                      .objectFit(ImageFit.Contain)
+                      .width(14).height(14).objectFit(ImageFit.Contain)
                     Text(this.isAiReading ? '停止' : '朗读')
                       .fontSize(11)
                       .fontColor(this.isAiReading ? '#e74c3c' : '#666')

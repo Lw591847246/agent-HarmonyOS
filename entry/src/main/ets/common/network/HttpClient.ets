@@ -65,7 +65,7 @@ export class HttpClient {
         header: HttpInterceptor.buildJsonHeader(),
         extraData: body ? JSON.stringify(body) : undefined,
         connectTimeout: AppConfig.CONNECT_TIMEOUT,
-        readTimeout: AppConfig.READ_TIMEOUT
+        readTimeout: AppConfig.UPLOAD_READ_TIMEOUT
       })
       const text = HttpInterceptor.handleResponse(resp)
       try {
@@ -222,8 +222,8 @@ export class HttpClient {
         method: http.RequestMethod.POST,
         header: header,
         extraData: body,
-        connectTimeout: AppConfig.CONNECT_TIMEOUT,
-        readTimeout: AppConfig.READ_TIMEOUT
+        connectTimeout: AppConfig.UPLOAD_CONNECT_TIMEOUT,
+        readTimeout: AppConfig.UPLOAD_READ_TIMEOUT
       })
       Logger.i(`上传返回码: ${resp.responseCode}`)
       const text = HttpInterceptor.handleResponse(resp)
@@ -370,6 +370,64 @@ export class HttpClient {
       }
     } else if (obj.content) {
       cb.onChunk(obj.content)
+    }
+  }
+
+
+  // ==================== ⭐ 新增：单文件上传 ====================
+  static async uploadSingleFile<T>(
+    service: ServiceName,
+    path: string,
+    filePath: string,      // 沙箱绝对路径
+    fileName: string,      // 原始文件名
+    fieldName: string,     // 表单字段名，如 'file'
+    fields: FormField[],
+  ): Promise<T> {
+    const url = ServiceRouter.getBaseUrl(service) + path
+    Logger.i(`UPLOAD-SINGLE ${service} ${url} fieldName=${fieldName}`)
+
+    const builder = new MultipartBuilder()
+    for (let i = 0; i < fields.length; i++) {
+      const field: MultipartField = {
+        key: fields[i].key,
+        value: fields[i].value
+      }
+      builder.addField(field)
+    }
+
+    const mf: MultipartFile = {
+      fieldName: fieldName,
+      fileName: fileName,
+      filePath: filePath,
+      mimeType: 'application/octet-stream'
+    }
+    builder.addFile(mf)
+
+    const body = builder.build()
+    const token = TokenStore.getToken()
+    const header: MultipartHeader = {
+      'Content-Type': builder.getContentType(),
+      'Authorization': token
+    }
+
+    const req = http.createHttp()
+    try {
+      const resp = await req.request(url, {
+        method: http.RequestMethod.POST,
+        header: header,
+        extraData: body,
+        connectTimeout: AppConfig.CONNECT_TIMEOUT,
+        readTimeout: AppConfig.READ_TIMEOUT
+      })
+      Logger.i(`上传返回码: ${resp.responseCode}`)
+      const text = HttpInterceptor.handleResponse(resp)
+      try {
+        return JSON.parse(text) as T
+      } catch (e) {
+        throw AppError.parse('上传响应非 JSON', text.substring(0, 200))
+      }
+    } finally {
+      req.destroy()
     }
   }
 }

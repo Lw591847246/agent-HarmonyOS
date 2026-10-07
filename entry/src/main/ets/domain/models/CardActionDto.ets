@@ -6,4 +6,5 @@ export interface CardActionDto {
   option_key: string
   text: string
   client_id: string
+  file_id?: string              // ⭐ 新增：remove_asset 用
 }

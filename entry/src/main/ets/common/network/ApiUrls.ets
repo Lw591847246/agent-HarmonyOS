@@ -9,8 +9,16 @@ export class ApiUrls {
   static readonly CONVERSATIONS = '/agent/v1/conversations'
   static readonly CONVERSATION_NEW = '/agent/v1/conversation/new'
   static readonly CONVERSATION_HISTORY = '/agent/v1/conversation'
-  static readonly PROCESS_FILE = '/agent/v1/process-file'
-  static readonly OCR = '/agent/v1/ocr'
-  static readonly CHAT_ACTION = '/agent/v1/chat/action'    // ⭐ 新增
+  static readonly CHAT_ACTION = '/agent/v1/chat/action'
 
+  // ⭐ 新增：通用上传
+  static readonly UPLOAD_ASSET = '/agent/v1/upload/asset'
+  static readonly UPLOAD_THUMB_PREFIX = '/agent/v1/upload/thumb/'
+
+  // ⭐ 任务状态（换脸/liveportrait 共用）
+  static readonly JOB_PREFIX = '/agent/v1/chat/job/'
+
+  // ❌ 已删除：
+  // PROCESS_FILE = '/agent/v1/process-file'
+  // OCR = '/agent/v1/ocr'
 }

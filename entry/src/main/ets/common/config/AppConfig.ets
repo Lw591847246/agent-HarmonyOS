@@ -14,6 +14,10 @@ export class AppConfig {
   static readonly CONNECT_TIMEOUT: number = 60000
   static readonly READ_TIMEOUT: number = 600000
 
+  // ⭐ 上传专用（大文件用）
+  static readonly UPLOAD_CONNECT_TIMEOUT = 60000
+  static readonly UPLOAD_READ_TIMEOUT = 30 * 60 * 1000   // 30 分钟
+
   static readonly TOKEN_HEADER: string = 'Authorization'
   static readonly CONTENT_TYPE_JSON: string = 'application/json'
   static readonly CONTENT_TYPE_STREAM: string = 'text/plain'

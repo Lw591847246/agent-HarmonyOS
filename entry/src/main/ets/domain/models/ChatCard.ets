@@ -1,17 +1,49 @@
 /**
  * 卡片数据模型 - 与后端协议对应
  * 后端 SSE 事件：{ type: "card", card_json: "{...}" }
- * card_json 解析后就是 ChatCard 结构
  */
 
-/** confirm 卡片的摘要信息 */
+// ============================================================
+// LivePortrait 卡片（保留）
+// ============================================================
+
 export interface ChatCardConfirmSummary {
   template?: string
   voice?: string
   tts_text?: string
 }
 
-/** 卡片的额外数据（按 card_type 不同而不同） */
+// ============================================================
+// face_swap 卡片
+// ============================================================
+
+export interface FaceSwapAssetItem {
+  file_id: string
+  name: string
+  duration?: number
+  thumb_url?: string
+  removable?: boolean
+}
+
+export interface FaceSwapSummary {
+  source_image: FaceSwapAssetItem | null
+  target_videos: FaceSwapAssetItem[]
+  prompt: string
+}
+
+export interface FaceSwapTaskItem {
+  task_id: string
+  video_name: string
+  status: string          // pending | running | done | failed | canceled
+  progress: number
+  error?: string
+  video_url?: string      // 前端轮询到 done 时自己填
+}
+
+// ============================================================
+// extra 总结构
+// ============================================================
+
 export interface ChatCardExtra {
   // progress 卡片
   task_id?: string
@@ -32,9 +64,15 @@ export interface ChatCardExtra {
   sample_url?: string
   gender?: string
   locale?: string
+
+  // ⭐ face_swap 专用
+  fs_summary?: FaceSwapSummary
+  fs_tasks?: FaceSwapTaskItem[]
+  fs_missing?: string[]
+  fs_poll_url_template?: string
+  fs_video_url_template?: string
 }
 
-/** 卡片项（模板列表、声音列表等）的额外字段 */
 export interface ChatCardItemExtra {
   sample_url?: string
   gender?: string
@@ -57,6 +95,11 @@ export interface ChatCardSubmitAction {
   label: string
 }
 
+export interface ChatCardButton {
+  key: string
+  label: string
+}
+
 export interface ChatCard {
   card_id: string
   card_type: string
@@ -64,13 +107,25 @@ export interface ChatCard {
   description?: string
   items: ChatCardItem[]
   allow_text_input?: boolean
-  text_input_default?: string              // ⭐ 预填值（用户可编辑）
-  text_input_placeholder?: string          // ⭐ 仅作输入框提示
+  text_input_default?: string
+  text_input_placeholder?: string
   submit_action?: ChatCardSubmitAction
+  submit_text_action?: ChatCardSubmitAction      // ⭐ face_swap
+  buttons?: ChatCardButton[]                     // ⭐ face_swap
+  summary?: FaceSwapSummary                      // ⭐ face_swap
+  missing?: string[]                             // ⭐ face_swap
+  tasks?: FaceSwapTaskItem[]                     // ⭐ face_swap
+  poll_url_template?: string                     // ⭐ face_swap
+  video_url_template?: string                    // ⭐ face_swap
   extra?: ChatCardExtra
 }
 
+// ============================================================
+// 卡片类型常量
+// ============================================================
+
 export class CardType {
+  // LivePortrait
   static readonly TEMPLATE_PICKER = 'template_picker'
   static readonly TEXT_INPUT = 'text_input'
   static readonly VOICE_PICKER = 'voice_picker'
@@ -78,12 +133,17 @@ export class CardType {
   static readonly PROGRESS = 'progress'
   static readonly RESULT = 'result'
   static readonly ERROR = 'error'
+
+  // ⭐ face_swap
+  static readonly FACE_SWAP_ASSET_INPUT = 'face_swap_asset_input'
+  static readonly FACE_SWAP_CONFIRM = 'face_swap_confirm'
+  static readonly FACE_SWAP_TASK = 'face_swap_task'
 }
 
-/**
- * JSON.parse 结果的中间接口。
- * 所有字段可选，避免 as ChatCard 时字段缺失导致运行时问题。
- */
+// ============================================================
+// 解析
+// ============================================================
+
 interface RawCardJson {
   card_id?: string
   card_type?: string
@@ -91,13 +151,19 @@ interface RawCardJson {
   description?: string
   items?: ChatCardItem[]
   allow_text_input?: boolean
-  text_input_default?: string              // ⭐ 新增
+  text_input_default?: string
   text_input_placeholder?: string
   submit_action?: ChatCardSubmitAction
+  submit_text_action?: ChatCardSubmitAction
+  buttons?: ChatCardButton[]
+  summary?: FaceSwapSummary
+  missing?: string[]
+  tasks?: FaceSwapTaskItem[]
+  poll_url_template?: string
+  video_url_template?: string
   extra?: ChatCardExtra
 }
 
-/** 解析后端返回的 card_json 字符串，失败返回 null */
 export function parseCard(json: string): ChatCard | null {
   if (!json || json.length === 0) return null
   try {
@@ -115,6 +181,13 @@ export function parseCard(json: string): ChatCard | null {
     if (raw.text_input_default !== undefined) card.text_input_default = raw.text_input_default
     if (raw.text_input_placeholder !== undefined) card.text_input_placeholder = raw.text_input_placeholder
     if (raw.submit_action !== undefined) card.submit_action = raw.submit_action
+    if (raw.submit_text_action !== undefined) card.submit_text_action = raw.submit_text_action
+    if (raw.buttons !== undefined) card.buttons = raw.buttons
+    if (raw.summary !== undefined) card.summary = raw.summary
+    if (raw.missing !== undefined) card.missing = raw.missing
+    if (raw.tasks !== undefined) card.tasks = raw.tasks
+    if (raw.poll_url_template !== undefined) card.poll_url_template = raw.poll_url_template
+    if (raw.video_url_template !== undefined) card.video_url_template = raw.video_url_template
     if (raw.extra !== undefined) card.extra = raw.extra
     return card
   } catch (e) {
@@ -122,7 +195,10 @@ export function parseCard(json: string): ChatCard | null {
   }
 }
 
-/** 任务状态查询响应 */
+// ============================================================
+// 任务状态
+// ============================================================
+
 export interface JobStatusResp {
   task_id?: string
   session_id?: string
