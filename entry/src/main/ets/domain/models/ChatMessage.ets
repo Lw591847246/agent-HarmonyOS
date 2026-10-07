@@ -11,16 +11,14 @@ export class ChatMessage {
   completed: boolean = false
   thinkingDone: boolean = true
   duration: number = 0
-  // ⭐ 客户端幂等 ID：user 消息落库后原样回传；assistant 消息不用
   clientId: string = ''
 
-
-  // ⭐ 语音消息
   isVoice: boolean = false
-  voicePath: string = ''       // 沙箱缓存路径（.pcm）
-  voiceDuration: number = 0    // 秒
+  voicePath: string = ''
+  voiceDuration: number = 0
 
-
-  // ⭐ 新增：卡片消息时，这里存卡片 JSON 字符串
   cardJson: string = ''
+
+  // ⭐ 新增：消息类型 text / image / card / video
+  messageType: string = 'text'
 }

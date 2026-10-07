@@ -1,10 +1,9 @@
 /**
  * 卡片数据模型 - 与后端协议对应
- * 后端 SSE 事件：{ type: "card", card_json: "{...}" }
  */
 
 // ============================================================
-// LivePortrait 卡片（保留）
+// LivePortrait 卡片
 // ============================================================
 
 export interface ChatCardConfirmSummary {
@@ -34,10 +33,12 @@ export interface FaceSwapSummary {
 export interface FaceSwapTaskItem {
   task_id: string
   video_name: string
-  status: string          // pending | running | done | failed | canceled
+  status: string
   progress: number
   error?: string
-  video_url?: string      // 前端轮询到 done 时自己填
+  video_url?: string
+  file_size?: number      // ⭐ 新增
+  summary?: string        // ⭐ 新增
 }
 
 // ============================================================
@@ -45,27 +46,18 @@ export interface FaceSwapTaskItem {
 // ============================================================
 
 export interface ChatCardExtra {
-  // progress 卡片
   task_id?: string
   status?: string
   progress?: number
   poll_url?: string
 
-  // result 卡片
   video_url?: string
-
-  // error 卡片
   error?: string
-
-  // confirm 卡片
   summary?: ChatCardConfirmSummary
-
-  // voice 卡片
   sample_url?: string
   gender?: string
   locale?: string
 
-  // ⭐ face_swap 专用
   fs_summary?: FaceSwapSummary
   fs_tasks?: FaceSwapTaskItem[]
   fs_missing?: string[]
@@ -110,22 +102,17 @@ export interface ChatCard {
   text_input_default?: string
   text_input_placeholder?: string
   submit_action?: ChatCardSubmitAction
-  submit_text_action?: ChatCardSubmitAction      // ⭐ face_swap
-  buttons?: ChatCardButton[]                     // ⭐ face_swap
-  summary?: FaceSwapSummary                      // ⭐ face_swap
-  missing?: string[]                             // ⭐ face_swap
-  tasks?: FaceSwapTaskItem[]                     // ⭐ face_swap
-  poll_url_template?: string                     // ⭐ face_swap
-  video_url_template?: string                    // ⭐ face_swap
+  submit_text_action?: ChatCardSubmitAction
+  buttons?: ChatCardButton[]
+  summary?: FaceSwapSummary
+  missing?: string[]
+  tasks?: FaceSwapTaskItem[]
+  poll_url_template?: string
+  video_url_template?: string
   extra?: ChatCardExtra
 }
 
-// ============================================================
-// 卡片类型常量
-// ============================================================
-
 export class CardType {
-  // LivePortrait
   static readonly TEMPLATE_PICKER = 'template_picker'
   static readonly TEXT_INPUT = 'text_input'
   static readonly VOICE_PICKER = 'voice_picker'
@@ -134,15 +121,10 @@ export class CardType {
   static readonly RESULT = 'result'
   static readonly ERROR = 'error'
 
-  // ⭐ face_swap
   static readonly FACE_SWAP_ASSET_INPUT = 'face_swap_asset_input'
   static readonly FACE_SWAP_CONFIRM = 'face_swap_confirm'
   static readonly FACE_SWAP_TASK = 'face_swap_task'
 }
-
-// ============================================================
-// 解析
-// ============================================================
 
 interface RawCardJson {
   card_id?: string
@@ -195,10 +177,6 @@ export function parseCard(json: string): ChatCard | null {
   }
 }
 
-// ============================================================
-// 任务状态
-// ============================================================
-
 export interface JobStatusResp {
   task_id?: string
   session_id?: string
@@ -214,4 +192,7 @@ export interface JobStatusResp {
   error?: string
   created_at?: string
   finished_at?: string
+  file_size?: number      // ⭐ 新增
+  video_url?: string      // ⭐ 新增
+  summary?: string        // ⭐ 新增
 }

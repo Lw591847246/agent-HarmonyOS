@@ -19,7 +19,6 @@ export struct MessageItem {
   @Prop isVoicePlaying: boolean = false
   @Prop isAiReading: boolean = false
 
-  // ⭐ 扩为 5 参数
   onCardAction: (
     cardId: string,
     cardType: string,
@@ -31,19 +30,23 @@ export struct MessageItem {
     text: string, fileId?: string
   ) => {}
 
+  onPickUpload: (kind: string, cardId: string, cardType: string) => void =
+    (kind: string, cardId: string, cardType: string) => {}
+
   onPlayVideo: (url: string) => void = (url: string) => {}
+  onSaveVideo: (url: string) => void = (url: string) => {}    // ⭐ 新增
+  onShareVideo: (url: string) => void = (url: string) => {}   // ⭐ 新增
+
   onDownload: (relativeUrl: string) => void = () => {}
   onVoicePlay: () => void = () => {}
   onVoiceStop: () => void = () => {}
   onToggleAiReading: () => void = () => {}
-  onPickUpload: (kind: string, cardId: string, cardType: string) => void =
-    (kind: string, cardId: string, cardType: string) => {}
-
 
   private canRead(): boolean {
     if (!this.msg.completed) return false
     if (this.msg.content.length === 0) return false
     if (this.msg.content === '[图片已生成]') return false
+
     const hasImage = this.msg.imageBase64.length > 0
       || (this.msg.thumbUrl && this.msg.thumbUrl.length > 0)
     if (hasImage && this.msg.content.length < 10) return false
@@ -67,7 +70,6 @@ export struct MessageItem {
       if (card !== null) {
         CardRenderer({
           card: card,
-          // ⭐ 加 fileId 透传
           onCardAction: (
             cardId: string,
             cardType: string,
@@ -80,20 +82,22 @@ export struct MessageItem {
           onPickUpload: (kind: string, cardId: string, cardType: string) => {
             this.onPickUpload(kind, cardId, cardType)
           },
-          onPlay: (url: string) => this.onPlayVideo(url)
+          onPlay: (url: string) => this.onPlayVideo(url),
+          onSave: (url: string) => this.onSaveVideo(url),      // ⭐ 新增
+          onShare: (url: string) => this.onShareVideo(url),    // ⭐ 新增
         })
       }
     }, (card: ChatCard | null) => {
       if (card === null) return 'null'
       const prog = card.extra && card.extra.progress !== undefined ? card.extra.progress : 0
       const st = card.extra && card.extra.status ? card.extra.status : ''
-      // ⭐ face_swap_task 卡片：把每个 task 的状态拼进 key，触发重建
+      // ⭐ face_swap_task：把每个 task 状态拼进 key 触发重建
       let tasksKey = ''
       if (card.tasks && card.tasks.length > 0) {
         const parts: string[] = []
         for (let i = 0; i < card.tasks.length; i++) {
           const t = card.tasks[i]
-          parts.push(`${t.task_id}_${t.status}_${t.progress}`)
+          parts.push(`${t.task_id}_${t.status}_${t.progress}_${t.video_url ? 'V' : 'N'}`)
         }
         tasksKey = parts.join('|')
       }

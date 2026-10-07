@@ -24,11 +24,12 @@ export struct CardRenderer {
     text: string, fileId?: string
   ) => {}
 
-  // ⭐ 新增
   onPickUpload: (kind: string, cardId: string, cardType: string) => void =
     (kind: string, cardId: string, cardType: string) => {}
 
   onPlay: (url: string) => void = (url: string) => {}
+  onSave: (url: string) => void = (url: string) => {}       // ⭐ 新增
+  onShare: (url: string) => void = (url: string) => {}      // ⭐ 新增
 
   build() {
     if (this.card.card_type === CardType.TEMPLATE_PICKER) {
@@ -62,6 +63,8 @@ export struct CardRenderer {
         card: this.card,
         onAction: this.onCardAction,
         onPlay: this.onPlay,
+        onSave: this.onSave,
+        onShare: this.onShare,
       })
     }
   }

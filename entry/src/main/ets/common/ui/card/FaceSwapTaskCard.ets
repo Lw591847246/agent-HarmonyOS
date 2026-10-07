@@ -4,6 +4,7 @@ import { CardStyles } from './CardStyles'
 @Component
 export struct FaceSwapTaskCard {
   @Prop card: ChatCard
+
   onAction: (
     cardId: string,
     cardType: string,
@@ -14,7 +15,10 @@ export struct FaceSwapTaskCard {
     cardId: string, cardType: string, optionKey: string,
     text: string, fileId?: string
   ) => {}
+
   onPlay: (url: string) => void = (url: string) => {}
+  onSave: (url: string) => void = (url: string) => {}    // ⭐ 新增
+  onShare: (url: string) => void = (url: string) => {}  // ⭐ 新增
 
   build() {
     Column({ space: CardStyles.GAP }) {
@@ -31,14 +35,12 @@ export struct FaceSwapTaskCard {
           .width('100%')
       }
 
-      // 任务列表
       if (this.card.tasks && this.card.tasks.length > 0) {
         ForEach(this.card.tasks, (t: FaceSwapTaskItem) => {
           this.renderTaskRow(t)
-        }, (t: FaceSwapTaskItem) => t.task_id)
+        }, (t: FaceSwapTaskItem) => `${t.task_id}_${t.status}_${t.progress}`)
       }
 
-      // 底部按钮
       if (this.card.buttons) {
         ForEach(this.card.buttons, (btn: ChatCardButton) => {
           Button(btn.label)
@@ -49,10 +51,7 @@ export struct FaceSwapTaskCard {
             .width('100%')
             .height(36)
             .onClick(() => {
-              this.onAction(
-                this.card.card_id, this.card.card_type,
-                btn.key, ''
-              )
+              this.onAction(this.card.card_id, this.card.card_type, btn.key, '')
             })
         }, (btn: ChatCardButton) => btn.key)
       }
@@ -82,18 +81,76 @@ export struct FaceSwapTaskCard {
       }
       .width('100%')
 
-      // 进度条 / 播放按钮
       if (t.status === 'done' && t.video_url && t.video_url.length > 0) {
-        Button('播放')
-          .fontSize(CardStyles.FONT_SMALL)
-          .fontColor(CardStyles.TEXT_WHITE)
-          .backgroundColor(CardStyles.PRIMARY)
-          .borderRadius(CardStyles.RADIUS_BTN)
-          .height(32)
+        // ⭐ 已完成：视频摘要 + 三按钮
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            Text('📹').fontSize(24)
+
+            Column({ space: 3 }) {
+              Text(t.video_name)
+                .fontSize(13)
+                .fontColor(CardStyles.TEXT_PRIMARY)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+              Row({ space: 6 }) {
+                Text(this.formatSize(t.file_size))
+                  .fontSize(11)
+                  .fontColor(CardStyles.TEXT_HINT)
+                Text('·').fontSize(11).fontColor(CardStyles.TEXT_HINT)
+                Text(t.summary && t.summary.length > 0 ? t.summary : 'AI换脸视频')
+                  .fontSize(11)
+                  .fontColor(CardStyles.TEXT_HINT)
+                  .maxLines(1)
+                  .layoutWeight(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .width('100%')
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+          }
           .width('100%')
-          .onClick(() => this.onPlay(t.video_url!))
+
+          Row({ space: 8 }) {
+            Button('播放')
+              .fontSize(CardStyles.FONT_SMALL)
+              .fontColor(CardStyles.TEXT_WHITE)
+              .backgroundColor(CardStyles.PRIMARY)
+              .borderRadius(CardStyles.RADIUS_BTN)
+              .layoutWeight(1)
+              .height(32)
+              .onClick(() => this.onPlay(t.video_url!))
+
+            Button('保存')
+              .fontSize(CardStyles.FONT_SMALL)
+              .fontColor(CardStyles.PRIMARY)
+              .backgroundColor(Color.Transparent)
+              .border({ width: 1, color: CardStyles.PRIMARY })
+              .borderRadius(CardStyles.RADIUS_BTN)
+              .layoutWeight(1)
+              .height(32)
+              .onClick(() => this.onSave(t.video_url!))
+
+            Button('分享')
+              .fontSize(CardStyles.FONT_SMALL)
+              .fontColor(CardStyles.PRIMARY)
+              .backgroundColor(Color.Transparent)
+              .border({ width: 1, color: CardStyles.PRIMARY })
+              .borderRadius(CardStyles.RADIUS_BTN)
+              .layoutWeight(1)
+              .height(32)
+              .onClick(() => this.onShare(t.video_url!))
+          }
+          .width('100%')
+        }
+        .padding(CardStyles.PADDING_ITEM)
+        .width('100%')
+        .backgroundColor('#F0F7FF')
+        .borderRadius(CardStyles.RADIUS_ITEM)
       } else if (t.status === 'failed' || t.status === 'canceled') {
-        Text(t.error || '任务失败')
+        Text(t.error && t.error.length > 0 ? t.error : '任务失败')
           .fontSize(CardStyles.FONT_SMALL)
           .fontColor(CardStyles.DANGER)
           .width('100%')
@@ -131,5 +188,12 @@ export struct FaceSwapTaskCard {
     if (t.status === 'done') return CardStyles.PRIMARY
     if (t.status === 'failed' || t.status === 'canceled') return CardStyles.DANGER
     return CardStyles.TEXT_HINT
+  }
+
+  private formatSize(size?: number): string {
+    if (!size || size <= 0) return '未知大小'
+    if (size < 1024) return `${size} B`
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`
+    return `${(size / 1024 / 1024).toFixed(1)} MB`
   }
 }

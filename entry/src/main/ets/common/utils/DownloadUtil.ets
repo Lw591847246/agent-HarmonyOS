@@ -4,20 +4,12 @@ import { common } from '@kit.AbilityKit'
 import { TokenStore } from '../storage/TokenStore'
 import { EnvConfig } from '../config/EnvConfig'
 import { Logger } from '../logger/Logger'
+import { MediaCache } from './MediaCache'
 
-/**
- * 文件下载工具
- * - 带 Token 请求后端下载接口
- * - 下载到沙箱（cacheDir）
- * - 用系统 picker 让用户选保存位置
- */
 export class DownloadUtil {
 
   /**
    * 从后端下载文件到沙箱
-   * @param relativeUrl  相对路径，如 /agent/v1/ppt/download/xxx/yyy.pptx
-   * @param filename     落地文件名，如 ppt_xxx.pptx
-   * @returns 沙箱内的绝对路径
    */
   static async downloadToSandbox(relativeUrl: string, filename: string): Promise<string> {
     const ctx = getContext() as common.UIAbilityContext
@@ -36,7 +28,7 @@ export class DownloadUtil {
           },
           expectDataType: http.HttpDataType.ARRAY_BUFFER,
           connectTimeout: 10000,
-          readTimeout: 60000
+          readTimeout: 5 * 60 * 1000
         },
         (err, data) => {
           req.destroy()
@@ -69,8 +61,16 @@ export class DownloadUtil {
   }
 
   /**
+   * ⭐ 优先从 MediaCache 拿，未命中才下载。
+   * 返回沙箱绝对路径。
+   */
+  static async getOrDownload(relativeUrl: string): Promise<string | null> {
+    const cached = await MediaCache.ensureCached(relativeUrl)
+    return cached
+  }
+
+  /**
    * 弹出"另存为"选择器，把沙箱文件拷贝到用户选定的位置
-   * @returns true=已保存，false=用户取消
    */
   static async saveToUserLocation(sandboxPath: string, filename: string): Promise<boolean> {
     try {
@@ -84,7 +84,6 @@ export class DownloadUtil {
         return false
       }
 
-      // 读沙箱文件 → 写入用户选定的 URI
       const srcFile = fs.openSync(sandboxPath, fs.OpenMode.READ_ONLY)
       try {
         const stat = fs.statSync(srcFile.fd)
@@ -113,8 +112,22 @@ export class DownloadUtil {
   }
 
   /**
-   * 一站式：下载 + 保存 + 清理沙箱
-   * @returns true=已保存，false=用户取消
+   * ⭐ 一站式保存：走 MediaCache 拿本地 → 保存到用户位置。
+   * 与 downloadAndSave 的区别：优先用缓存，不重新下载。
+   */
+  static async saveCachedToUser(relativeUrl: string, filename: string): Promise<boolean> {
+    // 1. 先确保缓存
+    const cached = await MediaCache.ensureCached(relativeUrl)
+    if (!cached) {
+      throw new Error('获取视频失败')
+    }
+    // 2. 弹窗另存为
+    return await DownloadUtil.saveToUserLocation(cached, filename)
+  }
+
+  /**
+   * 旧的：下载 + 保存 + 清理沙箱
+   * 保留兼容
    */
   static async downloadAndSave(relativeUrl: string, filename: string): Promise<boolean> {
     const sandboxPath = await DownloadUtil.downloadToSandbox(relativeUrl, filename)

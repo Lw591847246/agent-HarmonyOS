@@ -27,28 +27,45 @@ export class ConversationViewModel {
   async loadHistory(sessionId: string): Promise<ChatMessage[]> {
     try {
       const list = await this.uc.history(sessionId)
-      return list.map((h) => {
-        // ⭐ 第三参传 client_id（老数据后端返回 null → 前端置 ''）
+      const result: ChatMessage[] = []
+
+      for (let i = 0; i < list.length; i++) {
+        const h = list[i]
         const cid: string = h.clientId ? h.clientId : ''
-        const m = ChatUseCase.createMessage(h.role, h.content, cid)
 
-        m.completed = true
-        m.thinkingDone = true
-        m.duration = h.durationMs ? Math.round(h.durationMs / 1000) : 0    // ⭐ 新增
+        // ⭐ 按 message_type 分流
+        const msgType: string = h.message_type ? h.message_type : 'text'
 
-        if (h.message_type === 'image') {
+        let msg: ChatMessage
+        if (msgType === 'card') {
+          // 卡片消息：content 里是 JSON，塞进 cardJson
+          msg = ChatUseCase.createMessage(h.role, '', cid)
+          msg.cardJson = h.content || ''
+          msg.content = ''
+        } else if (msgType === 'image') {
+          msg = ChatUseCase.createMessage(h.role, h.content, cid)
           if (h.image_url) {
-            m.imageUrl = h.image_url.startsWith('http')
+            msg.imageUrl = h.image_url.startsWith('http')
               ? h.image_url : EnvConfig.AGENT_BASE_URL + h.image_url
           }
           if (h.thumb_url) {
-            m.thumbUrl = h.thumb_url.startsWith('http')
+            msg.thumbUrl = h.thumb_url.startsWith('http')
               ? h.thumb_url : EnvConfig.AGENT_BASE_URL + h.thumb_url
           }
+        } else {
+          // text / video / 其它：默认按文本处理
+          msg = ChatUseCase.createMessage(h.role, h.content, cid)
         }
 
-        return m
-      })
+        msg.messageType = msgType
+        msg.completed = true
+        msg.thinkingDone = true
+        msg.duration = h.durationMs ? Math.round(h.durationMs / 1000) : 0
+
+        result.push(msg)
+      }
+
+      return result
     } catch (e) {
       ErrorHandler.toUserMessage(e)
       return []
