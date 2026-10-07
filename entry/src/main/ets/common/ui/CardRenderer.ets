@@ -9,6 +9,7 @@ import { VoicePickerCard } from './card/VoicePickerCard'
 import { FaceSwapAssetInputCard } from './card/FaceSwapAssetInputCard'
 import { FaceSwapConfirmCard } from './card/FaceSwapConfirmCard'
 import { FaceSwapTaskCard } from './card/FaceSwapTaskCard'
+import { FaceSwapPickImageCard } from './card/FaceSwapPickImageCard'
 
 @Component
 export struct CardRenderer {
@@ -46,6 +47,11 @@ export struct CardRenderer {
       ResultCard({ card: this.card, onPlay: this.onPlay })
     } else if (this.card.card_type === CardType.ERROR) {
       ErrorCard({ card: this.card })
+    } else if (this.card.card_type === CardType.FACE_SWAP_PICK_IMAGE) {   // ⭐ 新增
+      FaceSwapPickImageCard({
+        card: this.card,
+        onAction: this.onCardAction,
+      })
     } else if (this.card.card_type === CardType.FACE_SWAP_ASSET_INPUT) {
       FaceSwapAssetInputCard({
         card: this.card,

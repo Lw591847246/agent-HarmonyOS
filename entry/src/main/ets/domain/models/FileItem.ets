@@ -2,4 +2,5 @@
 export interface FileItem {
   name: string
   uri: string
+  type?: string       // ⭐ 'image' | 'video' | 'doc'
 }

@@ -1,5 +1,7 @@
 import { ChatCard, ChatCardButton, FaceSwapTaskItem } from '../../../domain/models/ChatCard'
 import { CardStyles } from './CardStyles'
+import { ServiceRouter } from '../../../common/network/ServiceRouter'
+import { Logger } from '../../../common/logger/Logger'
 
 @Component
 export struct FaceSwapTaskCard {
@@ -17,8 +19,26 @@ export struct FaceSwapTaskCard {
   ) => {}
 
   onPlay: (url: string) => void = (url: string) => {}
-  onSave: (url: string) => void = (url: string) => {}    // ⭐ 新增
-  onShare: (url: string) => void = (url: string) => {}  // ⭐ 新增
+  onSave: (url: string) => void = (url: string) => {}
+  onShare: (url: string) => void = (url: string) => {}
+
+  // ⭐ 每个 task 一个 VideoController
+  private videoControllers: Map<string, VideoController> = new Map()
+
+  private getController(taskId: string): VideoController {
+    let c = this.videoControllers.get(taskId)
+    if (!c) {
+      c = new VideoController()
+      this.videoControllers.set(taskId, c)
+    }
+    return c
+  }
+
+  private getFullUrl(url: string): string {
+    if (!url || url.length === 0) return ''
+    if (url.startsWith('http')) return url
+    return ServiceRouter.getBaseUrl('agent') + url
+  }
 
   build() {
     Column({ space: CardStyles.GAP }) {
@@ -38,7 +58,7 @@ export struct FaceSwapTaskCard {
       if (this.card.tasks && this.card.tasks.length > 0) {
         ForEach(this.card.tasks, (t: FaceSwapTaskItem) => {
           this.renderTaskRow(t)
-        }, (t: FaceSwapTaskItem) => `${t.task_id}_${t.status}_${t.progress}`)
+        }, (t: FaceSwapTaskItem) => `${t.task_id}_${t.status}_${t.progress}_${t.video_url ? 'V' : 'N'}`)
       }
 
       if (this.card.buttons) {
@@ -67,6 +87,7 @@ export struct FaceSwapTaskCard {
   @Builder
   renderTaskRow(t: FaceSwapTaskItem) {
     Column({ space: 6 }) {
+      // 标题行：名称 + 状态
       Row({ space: CardStyles.GAP_SMALL }) {
         Text(t.video_name)
           .fontSize(CardStyles.FONT_BODY)
@@ -82,47 +103,40 @@ export struct FaceSwapTaskCard {
       .width('100%')
 
       if (t.status === 'done' && t.video_url && t.video_url.length > 0) {
-        // ⭐ 已完成：视频摘要 + 三按钮
         Column({ space: 8 }) {
-          Row({ space: 8 }) {
-            Text('📹').fontSize(24)
+          // ⭐ 内嵌视频播放器（支持全屏）
+          Video({
+            src: this.getFullUrl(t.video_url),
+            controller: this.getController(t.task_id)
+          })
+            .width('100%')
+            .height(220)
+            .controls(true)
+            .autoPlay(false)
+            .objectFit(ImageFit.Contain)
+            .backgroundColor('#000000')
+            .borderRadius(CardStyles.RADIUS_ITEM)
+            .onStart(() => { Logger.i(`[FaceSwapTaskCard] video start ${t.task_id}`) })
+            .onFinish(() => { Logger.i(`[FaceSwapTaskCard] video finish ${t.task_id}`) })
+            .onError(() => { Logger.e(`[FaceSwapTaskCard] video error ${t.task_id}`) })
 
-            Column({ space: 3 }) {
-              Text(t.video_name)
-                .fontSize(13)
-                .fontColor(CardStyles.TEXT_PRIMARY)
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-              Row({ space: 6 }) {
-                Text(this.formatSize(t.file_size))
-                  .fontSize(11)
-                  .fontColor(CardStyles.TEXT_HINT)
-                Text('·').fontSize(11).fontColor(CardStyles.TEXT_HINT)
-                Text(t.summary && t.summary.length > 0 ? t.summary : 'AI换脸视频')
-                  .fontSize(11)
-                  .fontColor(CardStyles.TEXT_HINT)
-                  .maxLines(1)
-                  .layoutWeight(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-              }
-              .width('100%')
-            }
-            .layoutWeight(1)
-            .alignItems(HorizontalAlign.Start)
+          // 文件信息行
+          Row({ space: 6 }) {
+            Text(this.formatSize(t.file_size))
+              .fontSize(11)
+              .fontColor(CardStyles.TEXT_HINT)
+            Text('·').fontSize(11).fontColor(CardStyles.TEXT_HINT)
+            Text(t.summary && t.summary.length > 0 ? t.summary : 'AI换脸视频')
+              .fontSize(11)
+              .fontColor(CardStyles.TEXT_HINT)
+              .maxLines(1)
+              .layoutWeight(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
           .width('100%')
 
+          // 保存 / 分享
           Row({ space: 8 }) {
-            Button('播放')
-              .fontSize(CardStyles.FONT_SMALL)
-              .fontColor(CardStyles.TEXT_WHITE)
-              .backgroundColor(CardStyles.PRIMARY)
-              .borderRadius(CardStyles.RADIUS_BTN)
-              .layoutWeight(1)
-              .height(32)
-              .onClick(() => this.onPlay(t.video_url!))
-
             Button('保存')
               .fontSize(CardStyles.FONT_SMALL)
               .fontColor(CardStyles.PRIMARY)

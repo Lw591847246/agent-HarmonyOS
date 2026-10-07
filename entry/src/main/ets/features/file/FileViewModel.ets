@@ -14,21 +14,21 @@ export class FileViewModel {
     this.ctx = ctx
   }
 
-  /** ⭐ 新增：从相册选视频 */
-  async pickVideo(max: number = 1): Promise<FileItem[]> {
-    try {
-      const p = new photoAccessHelper.PhotoViewPicker()
-      const r = await p.select({
-        maxSelectNumber: max,
-        MIMEType: photoAccessHelper.PhotoViewMIMETypes.VIDEO_TYPE
-      })
-      return FileUseCase.fromUriList(r.photoUris)
-    } catch (e) {
-      Logger.e('选择视频失败: ' + (e as Error).message)
-      return []
+  // ⭐ 按扩展名判断类型
+  private static guessType(name: string): string {
+    const lower = name.toLowerCase()
+    if (lower.endsWith('.mp4') || lower.endsWith('.mov')
+      || lower.endsWith('.avi') || lower.endsWith('.mkv')
+      || lower.endsWith('.webm')) {
+      return 'video'
     }
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+      || lower.endsWith('.png') || lower.endsWith('.webp')
+      || lower.endsWith('.bmp') || lower.endsWith('.gif')) {
+      return 'image'
+    }
+    return 'doc'
   }
-
 
   /** 从相册选图 */
   async pickImages(max: number = 3): Promise<FileItem[]> {
@@ -38,29 +38,52 @@ export class FileViewModel {
         maxSelectNumber: max,
         MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE
       })
-      return FileUseCase.fromUriList(r.photoUris)
+      const list = FileUseCase.fromUriList(r.photoUris)
+      for (let i = 0; i < list.length; i++) {
+        list[i].type = 'image'
+      }
+      return list
     } catch (e) {
       Logger.e('选择图片失败: ' + (e as Error).message)
       return []
     }
   }
 
-  /** 从文件选择器选文件 */
+  /** 从相册选视频 */
+  async pickVideo(max: number = 1): Promise<FileItem[]> {
+    try {
+      const p = new photoAccessHelper.PhotoViewPicker()
+      const r = await p.select({
+        maxSelectNumber: max,
+        MIMEType: photoAccessHelper.PhotoViewMIMETypes.VIDEO_TYPE
+      })
+      const list = FileUseCase.fromUriList(r.photoUris)
+      for (let i = 0; i < list.length; i++) {
+        list[i].type = 'video'
+      }
+      return list
+    } catch (e) {
+      Logger.e('选择视频失败: ' + (e as Error).message)
+      return []
+    }
+  }
+
+  /** 从文件选择器选文件（可能是文档，也可能是图片/视频） */
   async pickDocuments(max: number = 3): Promise<FileItem[]> {
     try {
       const d = new picker.DocumentViewPicker()
       const uris = await d.select({ maxSelectNumber: max })
-      return FileUseCase.fromUriList(uris)
+      const list = FileUseCase.fromUriList(uris)
+      for (let i = 0; i < list.length; i++) {
+        list[i].type = FileViewModel.guessType(list[i].name)
+      }
+      return list
     } catch (e) {
       Logger.e('选择文件失败: ' + (e as Error).message)
       return []
     }
   }
 
-  /**
-   * ⭐ 拍照：拉起系统相机，返回沙箱内的新文件
-   * 用户取消 / 失败 → 返回 null
-   */
   async capturePhoto(): Promise<FileItem | null> {
     try {
       const profile: cameraPicker.PickerProfile = {
@@ -73,19 +96,15 @@ export class FileViewModel {
         profile
       )
 
-      // 用户取消或失败
       if (result.resultCode !== 0
         || !result.resultUri
         || result.resultUri.length === 0) {
-        Logger.i('[FileViewModel] 用户取消拍照')
         return null
       }
 
-      // ⭐ 相机返回的 uri 是临时的，立刻拷贝到沙箱
       const name = `camera_${Date.now()}.jpg`
       const destPath = `${this.ctx.cacheDir}/${name}`
 
-      // 用 fd 方式拷贝，兼容 media uri
       const srcFile = fs.openSync(result.resultUri, fs.OpenMode.READ_ONLY)
       const destFile = fs.openSync(
         destPath,
@@ -98,11 +117,12 @@ export class FileViewModel {
         fs.closeSync(destFile)
       }
 
-      Logger.i(`[FileViewModel] 拍照成功 → ${destPath}`)
-      return {
+      const item: FileItem = {
         name: name,
-        uri: `file://${destPath}`
+        uri: `file://${destPath}`,
+        type: 'image'
       }
+      return item
     } catch (e) {
       Logger.e('拍照失败: ' + (e as Error).message)
       return null

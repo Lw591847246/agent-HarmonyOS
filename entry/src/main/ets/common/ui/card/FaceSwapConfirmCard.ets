@@ -15,7 +15,6 @@ export struct FaceSwapConfirmCard {
     text: string, fileId?: string
   ) => {}
 
-  // ⭐ 新增
   onPickUpload: (kind: string, cardId: string, cardType: string) => void =
     (kind: string, cardId: string, cardType: string) => {}
 
@@ -98,13 +97,15 @@ export struct FaceSwapConfirmCard {
         ForEach(this.card.buttons, (btn: ChatCardButton) => {
           Button(btn.label)
             .fontSize(CardStyles.FONT_BODY)
-            .fontColor(btn.key === 'cancel' ? CardStyles.TEXT_SECONDARY : CardStyles.TEXT_WHITE)
+            // ⭐ 修复：底色为主色 → 白字；底色为浅灰 → 深字
+            .fontColor(this.isPrimaryButton(btn.key)
+              ? CardStyles.TEXT_WHITE
+              : CardStyles.TEXT_PRIMARY)
             .backgroundColor(this.btnBg(btn.key))
             .borderRadius(CardStyles.RADIUS_BTN)
             .width('100%')
             .height(36)
             .onClick(() => {
-              // ⭐ 上传类按钮分流
               if (btn.key === 'add_video') {
                 this.onPickUpload('video', this.card.card_id, this.card.card_type)
               } else if (btn.key === 'replace_face') {
@@ -174,11 +175,12 @@ export struct FaceSwapConfirmCard {
     .width('100%')
   }
 
+  // ⭐ 是否主色按钮（只有"确认生成"是主色）
+  private isPrimaryButton(key: string): boolean {
+    return key === 'confirm'
+  }
+
   private btnBg(key: string): string {
-    if (key === 'cancel' || key === 'add_video'
-      || key === 'replace_face' || key === 'clear_assets') {
-      return CardStyles.BG_ITEM
-    }
-    return CardStyles.PRIMARY
+    return this.isPrimaryButton(key) ? CardStyles.PRIMARY : CardStyles.BG_ITEM
   }
 }

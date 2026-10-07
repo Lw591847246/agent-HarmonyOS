@@ -96,6 +96,7 @@ export struct ChatPage {
 
   @State private currentIsPending: boolean = false
   @State private switchingSessionId: string = ''
+  @State private isSending: boolean = false
 
   private static readonly REQUEST_TIMEOUT_MS = 30 * 60 * 1000
 
@@ -134,7 +135,7 @@ export struct ChatPage {
   }
 
   private onImageEdited = (result: ImageEditorResult): void => {
-    const item: FileItem = { name: result.name, uri: result.uri }
+    const item: FileItem = { name: result.name, uri: result.uri, type: 'image' }
     this.attachedImages = [...this.attachedImages, item]
     promptAction.openToast({ message: '已添加到待发送' })
   }
@@ -292,6 +293,7 @@ export struct ChatPage {
   }
 
   handleSubmit(): void {
+    if (this.isSending) return
     if (this.isLoadingNow()) return
     if (!this.isCanSend()) {
       promptAction.openToast({ message: '请输入内容或选择文件' })
@@ -301,8 +303,8 @@ export struct ChatPage {
   }
 
   async send(): Promise<void> {
+    if (this.isSending) return
     const text = this.inputText.trim()
-    if (this.isLoadingNow()) return
 
     if (this.attachedImages.length > 0 || this.attachedFiles.length > 0) {
       this.sendAttachments(text)
@@ -310,8 +312,13 @@ export struct ChatPage {
     }
     if (text.length === 0) return
 
+    // ⭐ 立即上锁
+    this.isSending = true
+    this.loadingSessionId = this.currentSessionId
+
     const requestSessionId = this.currentSessionId
     const clientId = this.chatVM.genClientId()
+    this.inputText = ''
 
     const userMsg = this.chatVM.createUserMessage(text, undefined, clientId)
     this.messages.push(userMsg)
@@ -319,9 +326,6 @@ export struct ChatPage {
     this.messages.push(assistantMsg)
 
     this._startRequest(requestSessionId, userMsg, assistantMsg)
-
-    this.inputText = ''
-    this.loadingSessionId = requestSessionId
     this.messages = [...this.messages]
     this.scrollToBottom()
 
@@ -344,6 +348,11 @@ export struct ChatPage {
           if (this.currentSessionId === requestSessionId) this.scrollToBottom()
         },
         onDone: (info) => {
+          // ⭐ 识别重复请求信号
+          if (info.messageId === -1) {
+            this._handleDuplicate(requestSessionId, userMsg, assistantMsg)
+            return
+          }
           if (this.currentSessionId === requestSessionId) {
             if (info.durationMs > 0) {
               assistantMsg.duration = Math.round(info.durationMs / 1000)
@@ -355,6 +364,7 @@ export struct ChatPage {
         },
         onFinish: () => {
           this.loadingSessionId = ''
+          this.isSending = false
           this._finishRequest(requestSessionId)
           this.loadConversations()
           this._scanAndStartPolling(assistantMsg)
@@ -366,47 +376,38 @@ export struct ChatPage {
     } catch (e) {
       Logger.e('sendStream 失败: ' + (e as Error).message)
       this.loadingSessionId = ''
+      this.isSending = false
       this._finishRequest(requestSessionId)
     }
   }
-
   async sendAttachments(text: string): Promise<void> {
-    if (this.isLoadingNow()) return
+    if (this.isSending) return
+
+    // ⭐ 立即上锁
+    this.isSending = true
+    this.loadingSessionId = this.currentSessionId
 
     const requestSessionId = this.currentSessionId
     const clientId = this.chatVM.genClientId()
 
+    // ⭐ 快照 + 立即清空，防止二次点击
     const images = this.attachedImages
     const docs = this.attachedFiles
     const allFiles: FileItem[] = [...images, ...docs]
     const hasImages = images.length > 0
-
-    let attachRefs: AttachmentRefDto[] = []
-    try {
-      const results = await FileApi.uploadAssetBatch(
-        getContext(this) as common.Context,
-        requestSessionId,
-        allFiles
-      )
-      for (let i = 0; i < results.length; i++) {
-        const r = results[i]
-        const ref: AttachmentRefDto = { file_id: r.file_id, type: r.type }
-        attachRefs.push(ref)
-      }
-    } catch (e) {
-      promptAction.openToast({ message: `附件上传失败: ${(e as Error).message}` })
-      return
-    }
+    const originalText = text
 
     this.attachedImages = []
     this.attachedFiles = []
+    this.inputText = ''
 
-    let backendText = text
-    if (text.length === 0 && hasImages) {
+    // 先 push 消息让用户看到反馈
+    let backendText = originalText
+    if (originalText.length === 0 && hasImages) {
       backendText = '请提取图片中的文字'
     }
-    let displayText = text
-    if (text.length === 0) {
+    let displayText = originalText
+    if (originalText.length === 0) {
       if (hasImages) {
         displayText = '请提取图片中的内容'
       } else {
@@ -422,12 +423,43 @@ export struct ChatPage {
     this.messages.push(assistantMsg)
 
     this._startRequest(requestSessionId, userMsg, assistantMsg)
-
-    this.inputText = ''
-    this.loadingSessionId = requestSessionId
     this.messages = [...this.messages]
     this.scrollToBottom()
 
+    // ---- 上传 ----
+    let attachRefs: AttachmentRefDto[] = []
+    try {
+      const results = await FileApi.uploadAssetBatch(
+        getContext(this) as common.Context,
+        requestSessionId,
+        allFiles
+      )
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]
+        attachRefs.push({ file_id: r.file_id, type: r.type })
+      }
+    } catch (e) {
+      Logger.e(`[ChatPage] 附件上传失败: ${(e as Error).message}`)
+      promptAction.openToast({ message: `附件上传失败: ${(e as Error).message}` })
+
+      // ⭐ 上传失败：移除占位消息 + 恢复附件 + 解锁
+      const idx1 = this.messages.indexOf(assistantMsg)
+      if (idx1 >= 0) this.messages.splice(idx1, 1)
+      const idx2 = this.messages.indexOf(userMsg)
+      if (idx2 >= 0) this.messages.splice(idx2, 1)
+      this.messages = [...this.messages]
+
+      this.attachedImages = images
+      this.attachedFiles = docs
+      this.inputText = originalText
+
+      this.loadingSessionId = ''
+      this.isSending = false
+      this._finishRequest(requestSessionId)
+      return
+    }
+
+    // ---- 提交 chat ----
     try {
       this.currentRequest = await this.chatVM.sendWithAttachments({
         text: backendText,
@@ -449,20 +481,50 @@ export struct ChatPage {
           if (this.currentSessionId === requestSessionId) this.scrollToBottom()
         },
         onDone: (info) => {
+          // ⭐ 识别重复信号
+          if (info.messageId === -1) {
+            this._handleDuplicate(requestSessionId, userMsg, assistantMsg)
+            return
+          }
           if (this.currentSessionId === requestSessionId) {
             if (info.durationMs > 0) {
               assistantMsg.duration = Math.round(info.durationMs / 1000)
             }
             assistantMsg.completed = true
             this.messages = [...this.messages]
-            this.scrollToBottom()
           }
         },
         onFinish: () => {
+
           this.loadingSessionId = ''
           this._finishRequest(requestSessionId)
           this.loadConversations()
+
+          // ⭐ 自动 confirm：素材齐全时跳过确认卡片
+          const card = parseCard(assistantMsg.cardJson)
+          if (card && card.card_type === CardType.FACE_SWAP_CONFIRM) {
+            Logger.i(`[ChatPage] 素材齐全，自动提交换脸任务`)
+            // isSending 保持 true，由 _faceSwapActionInplace 接管
+            this.onCardAction(
+              card.card_id,
+              card.card_type,
+              'confirm',
+              '',
+              assistantMsg,
+              ''
+            )
+            return
+          }
+
+          // 素材不全（asset_input）或其它情况 → 正常处理
+          this.isSending = false
           this._scanAndStartPolling(assistantMsg)
+
+          // this.loadingSessionId = ''
+          // this.isSending = false
+          // this._finishRequest(requestSessionId)
+          // this.loadConversations()
+          // this._scanAndStartPolling(assistantMsg)
         },
         onSessionIdChange: (sid: string) => {
           this._handleSessionIdChange(sid, requestSessionId)
@@ -471,6 +533,7 @@ export struct ChatPage {
     } catch (e) {
       Logger.e('sendWithAttachments 失败: ' + (e as Error).message)
       this.loadingSessionId = ''
+      this.isSending = false
       this._finishRequest(requestSessionId)
       if (assistantMsg.content.length === 0) {
         assistantMsg.content = `[发送失败: ${(e as Error).message}]`
@@ -716,7 +779,8 @@ export struct ChatPage {
     const clientId = this.chatVM.genClientId()
 
     const isFaceSwapCard =
-      cardType === CardType.FACE_SWAP_ASSET_INPUT
+      cardType === CardType.FACE_SWAP_PICK_IMAGE          // ⭐ 新增：选图卡片原地替换
+        || cardType === CardType.FACE_SWAP_ASSET_INPUT
         || cardType === CardType.FACE_SWAP_CONFIRM
         || cardType === CardType.FACE_SWAP_TASK
 
@@ -804,6 +868,7 @@ export struct ChatPage {
         },
         () => {
           this.loadingSessionId = ''
+          this.isSending = false                    // ⭐ 新增：最终释放锁
           this._finishRequest(requestSessionId)
           this._scanAndStartPolling(msg)
         },
@@ -823,16 +888,13 @@ export struct ChatPage {
   ): Promise<void> {
     Logger.i(`[ChatPage] onFaceSwapPickUpload kind=${kind} cardId=${cardId}`)
 
-    let file: FileItem | null = null
+    // ⭐ 支持多选：图片最多 9 张（跟附件条上限一致），视频最多 3 个
+    let files: FileItem[] = []
     try {
       if (kind === 'image') {
-        const imgs: FileItem[] = await this.fileVM.pickImages(1)
-        Logger.i(`[ChatPage] pickImages count=${imgs.length}`)
-        if (imgs.length > 0) file = imgs[0]
+        files = await this.fileVM.pickImages(9)
       } else {
-        const vids: FileItem[] = await this.fileVM.pickVideo(1)
-        Logger.i(`[ChatPage] pickVideo count=${vids.length}`)
-        if (vids.length > 0) file = vids[0]
+        files = await this.fileVM.pickVideo(3)
       }
     } catch (e) {
       Logger.e(`[ChatPage] pick 异常: ${(e as Error).message}`)
@@ -840,28 +902,28 @@ export struct ChatPage {
       return
     }
 
-    if (file === null) {
+    if (files.length === 0) {
       Logger.i(`[ChatPage] 用户取消或未选中文件`)
       return
     }
 
-    Logger.i(`[ChatPage] file selected: name=${file.name}`)
+    Logger.i(`[ChatPage] picked ${files.length} files, kind=${kind}`)
+    promptAction.openToast({ message: `正在上传 ${files.length} 个文件…` })
 
-    promptAction.openToast({ message: '正在上传…' })
-
-    let uploaded: UploadAssetRespDto | null = null
+    // ⭐ 批量上传
+    let uploaded: UploadAssetRespDto[] = []
     const uploadStart = Date.now()
     try {
-      uploaded = await FileApi.uploadAsset(
+      uploaded = await FileApi.uploadAssetBatch(
         getContext(this) as common.Context,
         this.currentSessionId,
-        file,
+        files,
       )
       const cost = Date.now() - uploadStart
-      Logger.i(`[ChatPage] uploadAsset 完成，耗时=${cost}ms file_id=${uploaded.file_id}`)
+      Logger.i(`[ChatPage] uploadAssetBatch 完成，耗时=${cost}ms 数量=${uploaded.length}`)
     } catch (e) {
       const cost = Date.now() - uploadStart
-      Logger.e(`[ChatPage] uploadAsset 失败，耗时=${cost}ms err=${(e as Error).message}`)
+      Logger.e(`[ChatPage] uploadAssetBatch 失败，耗时=${cost}ms err=${(e as Error).message}`)
       promptAction.openToast({
         message: `上传失败（耗时 ${Math.round(cost / 1000)}秒）：${(e as Error).message}`,
         duration: 5000
@@ -869,14 +931,19 @@ export struct ChatPage {
       return
     }
 
-    if (uploaded === null) {
+    if (uploaded.length === 0) {
       promptAction.openToast({ message: '上传返回为空' })
       return
     }
 
-    const optionKey = (kind === 'image') ? 'attach_source_image' : 'attach_target_video'
-    await this.onCardAction(cardId, cardType, optionKey, '', msg, uploaded.file_id)
+    // ⭐ file_id 逗号拼接，后端 split
+    const ids = uploaded.map(u => u.file_id).join(',')
+    const optionKey = (kind === 'image') ? 'attach_source_images' : 'attach_target_videos'
+
+    Logger.i(`[ChatPage] dispatch optionKey=${optionKey} ids=${ids}`)
+    await this.onCardAction(cardId, cardType, optionKey, '', msg, ids)
   }
+
 
   private _scanAndStartPolling(msg: ChatMessage): void {
     if (msg.cardJson.length === 0) return
@@ -894,9 +961,14 @@ export struct ChatPage {
 
     if (card.card_type === CardType.FACE_SWAP_TASK) {
       if (!card.tasks || card.tasks.length === 0) return
-      Logger.i(`[ChatPage] 启动换脸多任务轮询 count=${card.tasks.length}`)
       for (let i = 0; i < card.tasks.length; i++) {
-        this._pollSingleFaceSwapTask(msg, card.tasks[i].task_id)
+        const t = card.tasks[i]
+        // ⭐ 只轮询未完成的
+        if (t.status === 'done' || t.status === 'failed' || t.status === 'canceled') {
+          continue
+        }
+        Logger.i(`[ChatPage] 启动换脸轮询 task=${t.task_id}`)
+        this._pollSingleFaceSwapTask(msg, t.task_id)
       }
       return
     }
@@ -1147,6 +1219,27 @@ export struct ChatPage {
     if (sessionId === this.currentSessionId) {
       this.currentIsPending = false
     }
+  }
+
+
+  /** ⭐ 后端返回重复信号：把刚 push 的用户消息和占位消息移除 */
+  private _handleDuplicate(
+    sessionId: string,
+    userMsg: ChatMessage,
+    assistantMsg: ChatMessage,
+  ): void {
+    Logger.e(`[ChatPage] 检测到重复请求，移除本地占位消息`)
+    const idx1 = this.messages.indexOf(assistantMsg)
+    if (idx1 >= 0) this.messages.splice(idx1, 1)
+    const idx2 = this.messages.indexOf(userMsg)
+    if (idx2 >= 0) this.messages.splice(idx2, 1)
+    this.messages = [...this.messages]
+
+    this.loadingSessionId = ''
+    this.isSending = false
+    this._finishRequest(sessionId)
+
+    promptAction.openToast({ message: '请勿重复提交' })
   }
 
   private _handleSessionIdChange(sid: string, requestSessionId: string): void {
@@ -1405,6 +1498,96 @@ export struct ChatPage {
     await this.tts.stop()
   }
 
+
+  // ⭐ 合并列表
+  private getAllAttachments(): FileItem[] {
+    const result: FileItem[] = []
+    for (let i = 0; i < this.attachedImages.length; i++) {
+      result.push(this.attachedImages[i])
+    }
+    for (let i = 0; i < this.attachedFiles.length; i++) {
+      result.push(this.attachedFiles[i])
+    }
+    return result
+  }
+
+  // ⭐ 按全局索引删除
+  private removeAttachmentAt(globalIdx: number): void {
+    const imgLen = this.attachedImages.length
+    if (globalIdx < imgLen) {
+      const next = this.attachedImages.slice()
+      next.splice(globalIdx, 1)
+      this.attachedImages = next
+      return
+    }
+    const docIdx = globalIdx - imgLen
+    const next2 = this.attachedFiles.slice()
+    next2.splice(docIdx, 1)
+    this.attachedFiles = next2
+  }
+
+  // ⭐ 单个附件卡片渲染
+  @Builder
+  renderAttachmentCard(f: FileItem, idx: number) {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Column({ space: 4 }) {
+        if (f.type === 'image') {
+          // 图片：显示缩略图
+          Image(f.uri)
+            .width(60).height(60)
+            .borderRadius(6)
+            .objectFit(ImageFit.Cover)
+            .backgroundColor('#eee')
+            .onClick(() => { this.previewUrl = f.uri })
+        } else if (f.type === 'video') {
+          // 视频：🎬 图标 + 深色底
+          Column() {
+            Text('🎬').fontSize(24)
+          }
+          .width(60).height(60)
+          .borderRadius(6)
+          .backgroundColor('#333')
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+        } else {
+          // 文档：📄 图标
+          Column() {
+            Text('📄').fontSize(24)
+          }
+          .width(60).height(60)
+          .borderRadius(6)
+          .backgroundColor('#e8e8e8')
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+        }
+
+        Text(f.name)
+          .fontSize(10)
+          .fontColor('#666')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width(60)
+          .textAlign(TextAlign.Center)
+      }
+      .padding(4)
+      .backgroundColor(Color.White)
+      .borderRadius(8)
+
+      // ✕ 删除按钮
+      Text('✕')
+        .fontSize(11)
+        .fontColor(Color.White)
+        .width(16).height(16)
+        .textAlign(TextAlign.Center)
+        .borderRadius(8)
+        .backgroundColor('#00000099')
+        .margin({ top: -4, right: -4 })
+        .onClick(() => this.removeAttachmentAt(idx))
+    }
+    .width(72).height(92)
+  }
+
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
@@ -1523,46 +1706,29 @@ export struct ChatPage {
         .layoutWeight(1).width('100%')
 
         // 图片附件条
-        if (this.attachedImages.length > 0) {
+        // ⭐ 统一附件条（图片 + 视频 + 文档）
+        if (this.getAllAttachments().length > 0) {
           Column() {
             Row() {
-              Text(`已选择 ${this.attachedImages.length} 张图片`)
+              Text(`已选择 ${this.getAllAttachments().length} 个文件`)
                 .fontSize(12).fontColor('#666').layoutWeight(1)
               Text('清空').fontSize(12).fontColor('#e74c3c')
-                .onClick(() => { this.attachedImages = [] })
+                .onClick(() => {
+                  this.attachedImages = []
+                  this.attachedFiles = []
+                })
             }
             .width('100%').margin({ bottom: 6 })
 
             Scroll() {
               Row({ space: 10 }) {
-                ForEach(this.attachedImages, (f: FileItem, idx: number) => {
-                  Stack({ alignContent: Alignment.TopEnd }) {
-                    Column({ space: 4 }) {
-                      Image(f.uri)
-                        .width(60).height(60)
-                        .borderRadius(6).objectFit(ImageFit.Cover)
-                        .backgroundColor('#eee')
-                        .onClick(() => { this.previewUrl = f.uri })
-                      Text(f.name)
-                        .fontSize(10).fontColor('#666')
-                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .width(60).textAlign(TextAlign.Center)
-                    }
-                    .padding(4).backgroundColor(Color.White).borderRadius(8)
-
-                    Text('✕')
-                      .fontSize(11).fontColor(Color.White)
-                      .width(16).height(16)
-                      .textAlign(TextAlign.Center)
-                      .borderRadius(8).backgroundColor('#00000099')
-                      .margin({ top: -4, right: -4 })
-                      .onClick(() => this.removeImageAt(idx))
-                  }
-                  .width(72).height(92)
+                ForEach(this.getAllAttachments(), (f: FileItem, idx: number) => {
+                  this.renderAttachmentCard(f, idx)
                 }, (f: FileItem, idx: number) => `${f.uri}_${idx}`)
               }
             }
-            .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+            .scrollable(ScrollDirection.Horizontal)
+            .scrollBar(BarState.Off)
             .width('100%')
           }
           .width('100%')
@@ -1571,22 +1737,10 @@ export struct ChatPage {
           .alignItems(HorizontalAlign.Start)
         }
 
-        // 文档附件条
-        if (this.attachedFiles.length > 0) {
-          Row() {
-            Text(`已选择 ${this.attachedFiles.length} 个文件`)
-              .fontSize(12).fontColor('#666').layoutWeight(1)
-            Text('清空').fontSize(12).fontColor('#e74c3c')
-              .onClick(() => { this.attachedFiles = [] })
-          }
-          .width('100%').padding({ left: 16, right: 16, top: 6, bottom: 6 })
-          .backgroundColor('#fff9e6')
-        }
-
         // 输入栏
         InputBar({
           text: $inputText,
-          loading: this.isLoadingNow(),
+          loading: this.isLoadingNow() || this.isSending,
           canSend: this.isCanSend(),
           showAddMenu: this.showAddMenu,
           isVoiceMode: this.isVoiceMode,

@@ -15,7 +15,6 @@ export struct FaceSwapAssetInputCard {
     text: string, fileId?: string
   ) => {}
 
-  // ⭐ 新增：上传类按钮回调
   onPickUpload: (kind: string, cardId: string, cardType: string) => void =
     (kind: string, cardId: string, cardType: string) => {}
 
@@ -67,13 +66,15 @@ export struct FaceSwapAssetInputCard {
         ForEach(this.card.buttons, (btn: ChatCardButton) => {
           Button(btn.label)
             .fontSize(CardStyles.FONT_BODY)
-            .fontColor(CardStyles.TEXT_WHITE)
+            // ⭐ 修复：主色底用白字，浅灰底用深字
+            .fontColor(this.isPrimaryButton(btn.key)
+              ? CardStyles.TEXT_WHITE
+              : CardStyles.TEXT_PRIMARY)
             .backgroundColor(this.btnBg(btn.key))
             .borderRadius(CardStyles.RADIUS_BTN)
             .width('100%')
             .height(36)
             .onClick(() => {
-              // ⭐ 分流：上传类按钮 vs 其它
               if (btn.key === 'upload_source_image') {
                 this.onPickUpload('image', this.card.card_id, this.card.card_type)
               } else if (btn.key === 'upload_target_video') {
@@ -154,8 +155,12 @@ export struct FaceSwapAssetInputCard {
     .width('100%')
   }
 
+  // ⭐ 主色按钮：上传人脸图 / 上传目标视频
+  private isPrimaryButton(key: string): boolean {
+    return key === 'upload_source_image' || key === 'upload_target_video'
+  }
+
   private btnBg(key: string): string {
-    if (key === 'cancel') return CardStyles.BG_ITEM
-    return CardStyles.PRIMARY
+    return this.isPrimaryButton(key) ? CardStyles.PRIMARY : CardStyles.BG_ITEM
   }
 }

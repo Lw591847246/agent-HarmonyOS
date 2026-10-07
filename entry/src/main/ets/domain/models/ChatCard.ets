@@ -120,7 +120,7 @@ export class CardType {
   static readonly PROGRESS = 'progress'
   static readonly RESULT = 'result'
   static readonly ERROR = 'error'
-
+  static readonly FACE_SWAP_PICK_IMAGE = 'face_swap_pick_image'   // ⭐ 新增
   static readonly FACE_SWAP_ASSET_INPUT = 'face_swap_asset_input'
   static readonly FACE_SWAP_CONFIRM = 'face_swap_confirm'
   static readonly FACE_SWAP_TASK = 'face_swap_task'
