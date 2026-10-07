@@ -40,12 +40,19 @@ export class MediaCache {
 
   private static extFromUrl(url: string): string {
     const lower = url.toLowerCase()
+    // 明确后缀优先
     if (lower.indexOf('.mp4') >= 0) return '.mp4'
     if (lower.indexOf('.mov') >= 0) return '.mov'
     if (lower.indexOf('.webm') >= 0) return '.webm'
     if (lower.indexOf('.png') >= 0) return '.png'
     if (lower.indexOf('.jpg') >= 0 || lower.indexOf('.jpeg') >= 0) return '.jpg'
-    return '.bin'
+
+    // ⭐ 后端接口推断（不带后缀的 URL）
+    if (lower.indexOf('/video') >= 0) return '.mp4'
+    if (lower.indexOf('/image') >= 0) return '.jpg'
+
+    // ⭐ 默认 mp4（换脸场景以视频为主）
+    return '.mp4'
   }
 
   /**

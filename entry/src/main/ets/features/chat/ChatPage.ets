@@ -36,6 +36,7 @@ import { ServiceRouter } from '../../common/network/ServiceRouter'
 import { AttachmentRefDto, UploadAssetRespDto } from '../../data/dto/Types'
 import { systemShare } from '@kit.ShareKit'
 import { fileUri } from '@kit.CoreFileKit'
+import fs from '@ohos.file.fs'
 
 
 interface PendingTurn {
@@ -595,19 +596,48 @@ export struct ChatPage {
   async onShareVideo(url: string): Promise<void> {
     Logger.i(`[ChatPage] onShareVideo url=${url}`)
     promptAction.openToast({ message: '正在准备分享…' })
+
     try {
-      // 1. 从缓存拿到沙箱路径
+      // 1. 从缓存拿沙箱路径（此时 MediaCache 已经存成 .mp4）
       const sandboxPath = await DownloadUtil.getOrDownload(url)
       if (sandboxPath === null || sandboxPath.length === 0) {
         promptAction.openToast({ message: '获取视频失败' })
         return
       }
 
-      // 2. 转 uri
-      const uri = fileUri.getUriFromPath(sandboxPath)
-      const ctx = getContext(this) as common.UIAbilityContext
+      Logger.i(`[ChatPage] onShareVideo 缓存路径=${sandboxPath}`)
 
-      // 3. 系统分享
+      // 2. ⭐ 确保有 .mp4 后缀（旧缓存可能还是 .bin）
+      const ctx = getContext(this) as common.UIAbilityContext
+      let sharePath = sandboxPath
+      if (!sandboxPath.endsWith('.mp4')) {
+        sharePath = `${ctx.cacheDir}/share_${Date.now()}.mp4`
+        try {
+          const src = fs.openSync(sandboxPath, fs.OpenMode.READ_ONLY)
+          const dest = fs.openSync(
+            sharePath,
+            fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC
+          )
+          try {
+            const stat = fs.statSync(src.fd)
+            const buf = new ArrayBuffer(stat.size)
+            fs.readSync(src.fd, buf)
+            fs.writeSync(dest.fd, buf)
+          } finally {
+            fs.closeSync(src)
+            fs.closeSync(dest)
+          }
+          Logger.i(`[ChatPage] onShareVideo 转为 mp4: ${sharePath}`)
+        } catch (e) {
+          Logger.e(`[ChatPage] 转 mp4 失败: ${(e as Error).message}`)
+          sharePath = sandboxPath   // 失败就用原路径
+        }
+      }
+
+      // 3. 转 uri
+      const uri = fileUri.getUriFromPath(sharePath)
+
+      // 4. 系统分享
       const shareData = new systemShare.SharedData({
         utd: 'general.video',
         uri: uri
@@ -622,7 +652,6 @@ export struct ChatPage {
       promptAction.openToast({ message: `分享失败: ${(e as Error).message}` })
     }
   }
-
   // ============================================================
   // ⭐ 播放视频：优先用缓存路径，未命中则直接走 URL
   // ============================================================
@@ -634,39 +663,35 @@ export struct ChatPage {
 
     const ctx = getContext(this) as common.UIAbilityContext
 
-    // ⭐ 尝试缓存命中，用本地 uri 播放（秒开）
-    let playUri = url
-    try {
-      const sandboxPath = await DownloadUtil.getOrDownload(url)
-      if (sandboxPath !== null && sandboxPath.length > 0) {
-        playUri = fileUri.getUriFromPath(sandboxPath)
-        Logger.i(`[ChatPage] onPlayVideo 命中缓存: ${playUri}`)
-      }
-    } catch (e) {
-      Logger.e(`[ChatPage] onPlayVideo 缓存失败，回退到 URL: ${(e as Error).message}`)
-    }
+    // ⭐ 直接用 HTTP URL 让系统播放器流播（支持 Range，边下边播）
+    const fullUrl = url.startsWith('http')
+      ? url
+      : `${ServiceRouter.getBaseUrl('agent')}${url}`
 
-    // ⭐ 走系统播放器
+    Logger.i(`[ChatPage] onPlayVideo url=${fullUrl}`)
+
+    // 1. 系统播放器
     try {
       const want: Want = {
         action: 'ohos.want.action.viewData',
         entities: ['entity.system.browsable'],
-        uri: playUri,
+        uri: fullUrl,
         type: 'video/mp4'
       }
       await ctx.startAbility(want)
+      Logger.i('[ChatPage] onPlayVideo 系统播放器打开成功')
       return
     } catch (e) {
       const err = e as BusinessError
-      Logger.e(`[ChatPage] onPlayVideo 失败 code=${err.code} msg=${err.message}`)
+      Logger.e(`[ChatPage] 系统播放器失败 code=${err.code} msg=${err.message}`)
     }
 
-    // 兜底：浏览器打开
+    // 2. 兜底：浏览器打开
     try {
       const wantBrowser: Want = {
         action: 'ohos.want.action.viewData',
         entities: ['entity.system.browsable'],
-        uri: playUri
+        uri: fullUrl
       }
       await ctx.startAbility(wantBrowser)
     } catch (e) {
@@ -674,7 +699,6 @@ export struct ChatPage {
       promptAction.openToast({ message: `无法打开视频: ${err.message}` })
     }
   }
-
   // ============================================================
   // ⭐ 卡片动作
   // ============================================================
