@@ -607,8 +607,26 @@ export struct ChatPage {
   }
 
   copyMessage(msg: ChatMessage): void {
-    if (!msg.content) return
-    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, msg.content)
+    let text = msg.content
+    if (!text) return
+
+    // ⭐ 用户消息：过滤掉 "文件：xxx" 附件行，只复制提示词
+    if (msg.role === 'user') {
+      const idx = text.indexOf('\n文件：')
+      if (idx >= 0) {
+        text = text.substring(0, idx).trim()
+      } else if (text.startsWith('文件：')) {
+        // 只有附件、没有提示词
+        text = ''
+      }
+    }
+
+    if (!text) {
+      promptAction.openToast({ message: '没有可复制的内容' })
+      return
+    }
+
+    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text)
     pasteboard.getSystemPasteboard().setData(data).then(() => {
       promptAction.openToast({ message: '已复制到剪贴板' })
     }).catch((e: Error) => {

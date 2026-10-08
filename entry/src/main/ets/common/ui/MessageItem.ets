@@ -53,6 +53,53 @@ export struct MessageItem {
     return true
   }
 
+  /**
+   * 从用户消息 content 里提取提示词部分
+   * content 格式： "提示词\n文件：a.png、b.pdf"  或  "文件：a.png、b.pdf"
+   */
+  private _promptText(): string {
+    const raw: string = this.msg.content || ''
+    if (!raw) return ''
+
+    const idx = raw.indexOf('\n文件：')
+    if (idx >= 0) {
+      return raw.substring(0, idx).trim()
+    }
+    // 只有附件、没有提示词
+    if (raw.startsWith('文件：')) {
+      return ''
+    }
+    return raw
+  }
+
+  /**
+   * 从用户消息 content 里提取附件名数组
+   * 优先从 content 解析；content 里没有则回退到 msg.files（本地刚发送时用）
+   */
+  private _fileNames(): string[] {
+    const raw: string = this.msg.content || ''
+
+    if (raw) {
+      let tail = ''
+      const idx = raw.indexOf('\n文件：')
+      if (idx >= 0) {
+        tail = raw.substring(idx + 4)     // "\n文件：" 长度 = 4
+      } else if (raw.startsWith('文件：')) {
+        tail = raw.substring(3)           // "文件：" 长度 = 3
+      }
+      if (tail) {
+        return tail
+          .split('、')
+          .map((s: string) => s.trim())
+          .filter((s: string) => s.length > 0)
+      }
+    }
+
+    // 回退：本地发送时的 msg.files
+    return this.msg.files || []
+  }
+
+
   private _extractDownloadUrl(content: string): string {
     if (!content) return ''
     const m = content.match(/\[DL:([^\]]+)\]/)
@@ -166,12 +213,33 @@ export struct MessageItem {
         } else {
           Row() {
             Column() {
-              Text(this.msg.content).fontSize(15).lineHeight(22).width('100%')
+              // 第一行：提示词
+              if (this._promptText().length > 0) {
+                Text(this._promptText())
+                  .fontSize(15)
+                  .lineHeight(22)
+                  .width('100%')
+                  .copyOption(CopyOptions.LocalDevice)
+              }
 
-              if (this.msg.files.length > 0) {
-                ForEach(this.msg.files, (name: string) => {
-                  Text('📎 ' + name).fontSize(12).fontColor('#555').margin({ top: 2 })
-                })
+              // 第二行：附件（图标 + 文件名）
+              if (this._fileNames().length > 0) {
+                Row({ space: 4 }) {
+                  Image($r('app.media.icon_file'))
+                    .width(14)
+                    .height(14)
+                    .objectFit(ImageFit.Contain)
+                    .flexShrink(0)
+                  Text(this._fileNames().join('、'))
+                    .fontSize(12)
+                    .fontColor('#555')
+                    .layoutWeight(1)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                }
+                .width('100%')
+                .margin({ top: this._promptText().length > 0 ? 4 : 0 })
+                .alignItems(VerticalAlign.Center)
               }
 
               MessageActionBar({
