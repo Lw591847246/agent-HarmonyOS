@@ -39,6 +39,7 @@ export interface FaceSwapTaskItem {
   video_url?: string
   file_size?: number      // ⭐ 新增
   summary?: string        // ⭐ 新增
+  duration_ms?: number    // ⭐ 新增
 }
 
 // ============================================================
@@ -195,4 +196,5 @@ export interface JobStatusResp {
   file_size?: number      // ⭐ 新增
   video_url?: string      // ⭐ 新增
   summary?: string        // ⭐ 新增
+  duration_ms?: number
 }

@@ -37,6 +37,7 @@ import { AttachmentRefDto, UploadAssetRespDto } from '../../data/dto/Types'
 import { systemShare } from '@kit.ShareKit'
 import { fileUri } from '@kit.CoreFileKit'
 import fs from '@ohos.file.fs'
+import { MediaCache } from '../../common/utils/MediaCache'
 
 
 interface PendingTurn {
@@ -1062,6 +1063,7 @@ export struct ChatPage {
         const fileSize = resp.file_size ?? 0
         const videoUrl = resp.video_url ?? ''
         const summary = resp.summary ?? ''
+        const durationMs = resp.duration_ms ?? 0        // ⭐ 新增
 
         const card = parseCard(msg.cardJson)
         if (!card || !card.tasks) {
@@ -1089,15 +1091,41 @@ export struct ChatPage {
           if (videoUrl.length > 0) {
             target.video_url = videoUrl
           } else {
-            // 兜底拼路径
             target.video_url = `/agent/v1/chat/job/${taskId}/video`
           }
           target.file_size = fileSize
           if (summary.length > 0) target.summary = summary
+          target.duration_ms = durationMs
+
+          // ⭐ 全部 task 都完成时，把卡片标题从"生成中"改成"生成完成"
+          let allDone = true
+          if (card.tasks) {
+            for (let i = 0; i < card.tasks.length; i++) {
+              if (card.tasks[i].status !== 'done') {
+                allDone = false
+                break
+              }
+            }
+          }
+          if (allDone) {
+            card.title = '视频生成完成'
+            card.description = card.tasks && card.tasks.length > 1
+              ? `共 ${card.tasks.length} 个视频` : ''
+            Logger.i(`[ChatPage] 所有任务完成，更新卡片标题`)
+          }
 
           msg.cardJson = JSON.stringify(card)
           this.messages = [...this.messages]
           this._stopPolling(taskId)
+
+          // ⭐ 完成后立刻预缓存
+          if (target.video_url && target.video_url.length > 0) {
+            MediaCache.ensureCached(target.video_url).then((p: string | null) => {
+              if (p) Logger.i(`[ChatPage] 视频预缓存成功: ${p}`)
+            }).catch((e: Error) => {
+              Logger.e(`[ChatPage] 视频预缓存失败: ${e.message}`)
+            })
+          }
           return
         }
 

@@ -12,6 +12,7 @@ interface VideoMsgData {
   summary?: string
   task_id?: string
   video_url?: string
+  duration_ms?: number    // ⭐ 新增
 }
 
 interface RawCardTypeCheck {
@@ -131,6 +132,7 @@ export class ConversationViewModel {
         video_url: v.video_url ? v.video_url : '',
         file_size: v.file_size ? v.file_size : 0,
         summary: v.summary ? v.summary : 'AI 生成视频',
+        duration_ms: v.duration_ms ?? 0,    // ⭐ 新增
       }
       tasks.push(item)
     }
