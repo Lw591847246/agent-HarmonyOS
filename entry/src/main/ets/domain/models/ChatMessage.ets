@@ -18,7 +18,7 @@ export class ChatMessage {
   voiceDuration: number = 0
 
   cardJson: string = ''
+  cardVersion: number = 0          // ⭐ 新增
 
-  // ⭐ 新增：消息类型 text / image / card / video
   messageType: string = 'text'
 }

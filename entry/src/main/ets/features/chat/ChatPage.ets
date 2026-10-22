@@ -252,7 +252,6 @@ export struct ChatPage {
       this.messages = list
       this.scrollToBottom()
 
-      // ⭐ 扫描历史卡片，恢复未完成的任务轮询
       this._scanHistoryForPolling(list)
     } catch (e) {
       Logger.e(`[ChatPage] loadHistory 失败: ${(e as Error).message}`)
@@ -265,6 +264,7 @@ export struct ChatPage {
 
   /** ⭐ 扫描历史消息，为未完成的 task 重启轮询 */
   private _scanHistoryForPolling(list: ChatMessage[]): void {
+    let needRefresh = false
     for (let i = 0; i < list.length; i++) {
       const m = list[i]
       if (m.cardJson.length === 0) continue
@@ -272,6 +272,24 @@ export struct ChatPage {
       if (!c) continue
 
       if (c.card_type === CardType.FACE_SWAP_TASK && c.tasks && c.tasks.length > 0) {
+        // ⭐ 历史卡片迁移初始 trace
+        const initTrace = c.extra?.agent_trace ?? []
+        if (initTrace.length > 0) {
+          let migrated = false
+          for (let k = 0; k < c.tasks.length; k++) {
+            const tk = c.tasks[k]
+            if (!tk.agent_trace || tk.agent_trace.length === 0) {
+              tk.agent_trace = initTrace.slice()
+              migrated = true
+            }
+          }
+          if (migrated) {
+            m.cardJson = JSON.stringify(c)
+            m.cardVersion = (m.cardVersion ?? 0) + 1
+            needRefresh = true
+          }
+        }
+
         for (let j = 0; j < c.tasks.length; j++) {
           const t = c.tasks[j]
           if (t.status !== 'done' && t.status !== 'failed' && t.status !== 'canceled') {
@@ -290,6 +308,10 @@ export struct ChatPage {
           }
         }
       }
+    }
+
+    if (needRefresh) {
+      this.messages = [...this.messages]
     }
   }
 
@@ -313,7 +335,6 @@ export struct ChatPage {
     }
     if (text.length === 0) return
 
-    // ⭐ 立即上锁
     this.isSending = true
     this.loadingSessionId = this.currentSessionId
 
@@ -349,7 +370,6 @@ export struct ChatPage {
           if (this.currentSessionId === requestSessionId) this.scrollToBottom()
         },
         onDone: (info) => {
-          // ⭐ 识别重复请求信号
           if (info.messageId === -1) {
             this._handleDuplicate(requestSessionId, userMsg, assistantMsg)
             return
@@ -381,17 +401,16 @@ export struct ChatPage {
       this._finishRequest(requestSessionId)
     }
   }
+
   async sendAttachments(text: string): Promise<void> {
     if (this.isSending) return
 
-    // ⭐ 立即上锁
     this.isSending = true
     this.loadingSessionId = this.currentSessionId
 
     const requestSessionId = this.currentSessionId
     const clientId = this.chatVM.genClientId()
 
-    // ⭐ 快照 + 立即清空，防止二次点击
     const images = this.attachedImages
     const docs = this.attachedFiles
     const allFiles: FileItem[] = [...images, ...docs]
@@ -402,7 +421,6 @@ export struct ChatPage {
     this.attachedFiles = []
     this.inputText = ''
 
-    // 先 push 消息让用户看到反馈
     let backendText = originalText
     if (originalText.length === 0 && hasImages) {
       backendText = '请提取图片中的文字'
@@ -443,7 +461,6 @@ export struct ChatPage {
       Logger.e(`[ChatPage] 附件上传失败: ${(e as Error).message}`)
       promptAction.openToast({ message: `附件上传失败: ${(e as Error).message}` })
 
-      // ⭐ 上传失败：移除占位消息 + 恢复附件 + 解锁
       const idx1 = this.messages.indexOf(assistantMsg)
       if (idx1 >= 0) this.messages.splice(idx1, 1)
       const idx2 = this.messages.indexOf(userMsg)
@@ -482,7 +499,6 @@ export struct ChatPage {
           if (this.currentSessionId === requestSessionId) this.scrollToBottom()
         },
         onDone: (info) => {
-          // ⭐ 识别重复信号
           if (info.messageId === -1) {
             this._handleDuplicate(requestSessionId, userMsg, assistantMsg)
             return
@@ -501,11 +517,9 @@ export struct ChatPage {
           this._finishRequest(requestSessionId)
           this.loadConversations()
 
-          // ⭐ 自动 confirm：素材齐全时跳过确认卡片
           const card = parseCard(assistantMsg.cardJson)
           if (card && card.card_type === CardType.FACE_SWAP_CONFIRM) {
             Logger.i(`[ChatPage] 素材齐全，自动提交换脸任务`)
-            // isSending 保持 true，由 _faceSwapActionInplace 接管
             this.onCardAction(
               card.card_id,
               card.card_type,
@@ -517,15 +531,8 @@ export struct ChatPage {
             return
           }
 
-          // 素材不全（asset_input）或其它情况 → 正常处理
           this.isSending = false
           this._scanAndStartPolling(assistantMsg)
-
-          // this.loadingSessionId = ''
-          // this.isSending = false
-          // this._finishRequest(requestSessionId)
-          // this.loadConversations()
-          // this._scanAndStartPolling(assistantMsg)
         },
         onSessionIdChange: (sid: string) => {
           this._handleSessionIdChange(sid, requestSessionId)
@@ -611,13 +618,11 @@ export struct ChatPage {
     let text = msg.content
     if (!text) return
 
-    // ⭐ 用户消息：过滤掉 "文件：xxx" 附件行，只复制提示词
     if (msg.role === 'user') {
       const idx = text.indexOf('\n文件：')
       if (idx >= 0) {
         text = text.substring(0, idx).trim()
       } else if (text.startsWith('文件：')) {
-        // 只有附件、没有提示词
         text = ''
       }
     }
@@ -654,15 +659,11 @@ export struct ChatPage {
     else if (type === MessageActionType.SHARE) promptAction.openToast({ message: '分享开发中' })
   }
 
-  // ============================================================
-  // ⭐ 视频：保存到本地
-  // ============================================================
   async onSaveVideo(url: string): Promise<void> {
     Logger.i(`[ChatPage] onSaveVideo url=${url}`)
     const filename = `face_swap_${Date.now()}.mp4`
     promptAction.openToast({ message: '正在准备保存…' })
     try {
-      // ⭐ 优先使用缓存，避免重复下载
       const saved = await DownloadUtil.saveCachedToUser(url, filename)
       if (saved) {
         promptAction.openToast({ message: '已保存到本地' })
@@ -672,15 +673,11 @@ export struct ChatPage {
     }
   }
 
-  // ============================================================
-  // ⭐ 视频：分享
-  // ============================================================
   async onShareVideo(url: string): Promise<void> {
     Logger.i(`[ChatPage] onShareVideo url=${url}`)
     promptAction.openToast({ message: '正在准备分享…' })
 
     try {
-      // 1. 从缓存拿沙箱路径（此时 MediaCache 已经存成 .mp4）
       const sandboxPath = await DownloadUtil.getOrDownload(url)
       if (sandboxPath === null || sandboxPath.length === 0) {
         promptAction.openToast({ message: '获取视频失败' })
@@ -689,7 +686,6 @@ export struct ChatPage {
 
       Logger.i(`[ChatPage] onShareVideo 缓存路径=${sandboxPath}`)
 
-      // 2. ⭐ 确保有 .mp4 后缀（旧缓存可能还是 .bin）
       const ctx = getContext(this) as common.UIAbilityContext
       let sharePath = sandboxPath
       if (!sandboxPath.endsWith('.mp4')) {
@@ -712,14 +708,12 @@ export struct ChatPage {
           Logger.i(`[ChatPage] onShareVideo 转为 mp4: ${sharePath}`)
         } catch (e) {
           Logger.e(`[ChatPage] 转 mp4 失败: ${(e as Error).message}`)
-          sharePath = sandboxPath   // 失败就用原路径
+          sharePath = sandboxPath
         }
       }
 
-      // 3. 转 uri
       const uri = fileUri.getUriFromPath(sharePath)
 
-      // 4. 系统分享
       const shareData = new systemShare.SharedData({
         utd: 'general.video',
         uri: uri
@@ -734,9 +728,7 @@ export struct ChatPage {
       promptAction.openToast({ message: `分享失败: ${(e as Error).message}` })
     }
   }
-  // ============================================================
-  // ⭐ 播放视频：优先用缓存路径，未命中则直接走 URL
-  // ============================================================
+
   async onPlayVideo(url: string): Promise<void> {
     if (!url || url.length === 0) {
       promptAction.openToast({ message: '视频 URL 为空' })
@@ -745,14 +737,12 @@ export struct ChatPage {
 
     const ctx = getContext(this) as common.UIAbilityContext
 
-    // ⭐ 直接用 HTTP URL 让系统播放器流播（支持 Range，边下边播）
     const fullUrl = url.startsWith('http')
       ? url
       : `${ServiceRouter.getBaseUrl('agent')}${url}`
 
     Logger.i(`[ChatPage] onPlayVideo url=${fullUrl}`)
 
-    // 1. 系统播放器
     try {
       const want: Want = {
         action: 'ohos.want.action.viewData',
@@ -765,10 +755,9 @@ export struct ChatPage {
       return
     } catch (e) {
       const err = e as BusinessError
-      Logger.e(`[ChatPage] 系统播放器失败 code=${err.code} msg=${err.message}`)
+      Logger.e(`[ChatPage] onPlayVideo 系统播放器失败 code=${err.code} msg=${err.message}`)
     }
 
-    // 2. 兜底：浏览器打开
     try {
       const wantBrowser: Want = {
         action: 'ohos.want.action.viewData',
@@ -781,9 +770,7 @@ export struct ChatPage {
       promptAction.openToast({ message: `无法打开视频: ${err.message}` })
     }
   }
-  // ============================================================
-  // ⭐ 卡片动作
-  // ============================================================
+
   async onCardAction(
     cardId: string,
     cardType: string,
@@ -798,7 +785,7 @@ export struct ChatPage {
     const clientId = this.chatVM.genClientId()
 
     const isFaceSwapCard =
-      cardType === CardType.FACE_SWAP_PICK_IMAGE          // ⭐ 新增：选图卡片原地替换
+      cardType === CardType.FACE_SWAP_PICK_IMAGE
         || cardType === CardType.FACE_SWAP_ASSET_INPUT
         || cardType === CardType.FACE_SWAP_CONFIRM
         || cardType === CardType.FACE_SWAP_TASK
@@ -887,7 +874,7 @@ export struct ChatPage {
         },
         () => {
           this.loadingSessionId = ''
-          this.isSending = false                    // ⭐ 新增：最终释放锁
+          this.isSending = false
           this._finishRequest(requestSessionId)
           this._scanAndStartPolling(msg)
         },
@@ -907,7 +894,6 @@ export struct ChatPage {
   ): Promise<void> {
     Logger.i(`[ChatPage] onFaceSwapPickUpload kind=${kind} cardId=${cardId}`)
 
-    // ⭐ 支持多选：图片最多 9 张（跟附件条上限一致），视频最多 3 个
     let files: FileItem[] = []
     try {
       if (kind === 'image') {
@@ -929,7 +915,6 @@ export struct ChatPage {
     Logger.i(`[ChatPage] picked ${files.length} files, kind=${kind}`)
     promptAction.openToast({ message: `正在上传 ${files.length} 个文件…` })
 
-    // ⭐ 批量上传
     let uploaded: UploadAssetRespDto[] = []
     const uploadStart = Date.now()
     try {
@@ -955,7 +940,6 @@ export struct ChatPage {
       return
     }
 
-    // ⭐ file_id 逗号拼接，后端 split
     const ids = uploaded.map(u => u.file_id).join(',')
     const optionKey = (kind === 'image') ? 'attach_source_images' : 'attach_target_videos'
 
@@ -980,9 +964,27 @@ export struct ChatPage {
 
     if (card.card_type === CardType.FACE_SWAP_TASK) {
       if (!card.tasks || card.tasks.length === 0) return
+
+      // ⭐ 把卡片级初始 trace 迁移到各 task
+      const initTrace = card.extra?.agent_trace ?? []
+      if (initTrace.length > 0) {
+        let migrated = false
+        for (let i = 0; i < card.tasks.length; i++) {
+          const t = card.tasks[i]
+          if (!t.agent_trace || t.agent_trace.length === 0) {
+            t.agent_trace = initTrace.slice()
+            migrated = true
+          }
+        }
+        if (migrated) {
+          msg.cardJson = JSON.stringify(card)
+          msg.cardVersion = (msg.cardVersion ?? 0) + 1
+          this.messages = [...this.messages]
+        }
+      }
+
       for (let i = 0; i < card.tasks.length; i++) {
         const t = card.tasks[i]
-        // ⭐ 只轮询未完成的
         if (t.status === 'done' || t.status === 'failed' || t.status === 'canceled') {
           continue
         }
@@ -1014,6 +1016,7 @@ export struct ChatPage {
               extra: { task_id: taskId, video_url: resultUrl },
             }
             msg.cardJson = JSON.stringify(resultCard)
+            msg.cardVersion = (msg.cardVersion ?? 0) + 1
             this.messages = [...this.messages]
             this._stopPolling(taskId)
             return
@@ -1026,6 +1029,7 @@ export struct ChatPage {
               items: [],
             }
             msg.cardJson = JSON.stringify(errorCard)
+            msg.cardVersion = (msg.cardVersion ?? 0) + 1
             this.messages = [...this.messages]
             this._stopPolling(taskId)
             return
@@ -1035,6 +1039,7 @@ export struct ChatPage {
               card.extra.status = status
             }
             msg.cardJson = JSON.stringify(card)
+            msg.cardVersion = (msg.cardVersion ?? 0) + 1
             this.messages = [...this.messages]
           }
         }
@@ -1063,7 +1068,7 @@ export struct ChatPage {
         const fileSize = resp.file_size ?? 0
         const videoUrl = resp.video_url ?? ''
         const summary = resp.summary ?? ''
-        const durationMs = resp.duration_ms ?? 0        // ⭐ 新增
+        const durationMs = resp.duration_ms ?? 0
 
         const card = parseCard(msg.cardJson)
         if (!card || !card.tasks) {
@@ -1087,6 +1092,26 @@ export struct ChatPage {
         target.progress = progress
         if (errorMsg.length > 0) target.error = errorMsg
 
+        // ⭐ 回填 Agent 执行轨迹
+        const agentTrace = resp.agent_trace ?? []
+        if (agentTrace.length > 0) {
+          target.agent_trace = agentTrace
+
+          // 单 task 时用当前 running 步骤覆写副标题
+          if (card.tasks.length === 1) {
+            let runningText = ''
+            for (let k = 0; k < agentTrace.length; k++) {
+              if (agentTrace[k].status === 'running') {
+                runningText = agentTrace[k].text
+                break
+              }
+            }
+            if (runningText.length > 0) {
+              card.description = `Agent: ${runningText}`
+            }
+          }
+        }
+
         if (status === 'done') {
           if (videoUrl.length > 0) {
             target.video_url = videoUrl
@@ -1097,7 +1122,6 @@ export struct ChatPage {
           if (summary.length > 0) target.summary = summary
           target.duration_ms = durationMs
 
-          // ⭐ 全部 task 都完成时，把卡片标题从"生成中"改成"生成完成"
           let allDone = true
           if (card.tasks) {
             for (let i = 0; i < card.tasks.length; i++) {
@@ -1115,10 +1139,10 @@ export struct ChatPage {
           }
 
           msg.cardJson = JSON.stringify(card)
+          msg.cardVersion = (msg.cardVersion ?? 0) + 1
           this.messages = [...this.messages]
           this._stopPolling(taskId)
 
-          // ⭐ 完成后立刻预缓存
           if (target.video_url && target.video_url.length > 0) {
             MediaCache.ensureCached(target.video_url).then((p: string | null) => {
               if (p) Logger.i(`[ChatPage] 视频预缓存成功: ${p}`)
@@ -1131,12 +1155,14 @@ export struct ChatPage {
 
         if (status === 'failed' || status === 'canceled') {
           msg.cardJson = JSON.stringify(card)
+          msg.cardVersion = (msg.cardVersion ?? 0) + 1
           this.messages = [...this.messages]
           this._stopPolling(taskId)
           return
         }
 
         msg.cardJson = JSON.stringify(card)
+        msg.cardVersion = (msg.cardVersion ?? 0) + 1
         this.messages = [...this.messages]
 
         const oldTimer = this.pollingTimers.get(taskId)
@@ -1222,10 +1248,8 @@ export struct ChatPage {
     SessionManager.logout()
   }
 
-  /** ⭐ 清缓存回调（Sidebar 触发） */
   private onCacheCleared(): void {
     Logger.i('[ChatPage] 缓存已清理')
-    // 未来如果需要，可以做一些界面刷新
   }
 
   private removeImageAt(index: number): void {
@@ -1267,8 +1291,6 @@ export struct ChatPage {
     }
   }
 
-
-  /** ⭐ 后端返回重复信号：把刚 push 的用户消息和占位消息移除 */
   private _handleDuplicate(
     sessionId: string,
     userMsg: ChatMessage,
@@ -1343,8 +1365,6 @@ export struct ChatPage {
       Logger.e(`[ChatPage] 重新拉消息失败: ${(e as Error).message}`)
     }
   }
-
-  // ============ 语音交互 ============
 
   private async onVoiceRequestPermission(): Promise<boolean> {
     const ctx = getContext(this) as common.UIAbilityContext
@@ -1544,8 +1564,6 @@ export struct ChatPage {
     await this.tts.stop()
   }
 
-
-  // ⭐ 合并列表
   private getAllAttachments(): FileItem[] {
     const result: FileItem[] = []
     for (let i = 0; i < this.attachedImages.length; i++) {
@@ -1557,7 +1575,6 @@ export struct ChatPage {
     return result
   }
 
-  // ⭐ 按全局索引删除
   private removeAttachmentAt(globalIdx: number): void {
     const imgLen = this.attachedImages.length
     if (globalIdx < imgLen) {
@@ -1572,13 +1589,11 @@ export struct ChatPage {
     this.attachedFiles = next2
   }
 
-  // ⭐ 单个附件卡片渲染
   @Builder
   renderAttachmentCard(f: FileItem, idx: number) {
     Stack({ alignContent: Alignment.TopEnd }) {
       Column({ space: 4 }) {
         if (f.type === 'image') {
-          // 图片：显示缩略图
           Image(f.uri)
             .width(60).height(60)
             .borderRadius(6)
@@ -1586,7 +1601,6 @@ export struct ChatPage {
             .backgroundColor('#eee')
             .onClick(() => { this.previewUrl = f.uri })
         } else if (f.type === 'video') {
-          // 视频：🎬 图标 + 深色底
           Column() {
             Text('🎬').fontSize(24)
           }
@@ -1596,7 +1610,6 @@ export struct ChatPage {
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
         } else {
-          // 文档：📄 图标
           Column() {
             Text('📄').fontSize(24)
           }
@@ -1619,7 +1632,6 @@ export struct ChatPage {
       .backgroundColor(Color.White)
       .borderRadius(8)
 
-      // ✕ 删除按钮
       Text('✕')
         .fontSize(11)
         .fontColor(Color.White)
@@ -1637,7 +1649,6 @@ export struct ChatPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
-        // 顶栏
         Row() {
           Text('☰').fontSize(22).padding(12)
             .onClick(() => { this.sidebarVisible = !this.sidebarVisible })
@@ -1658,7 +1669,6 @@ export struct ChatPage {
         .width('100%').height(56).backgroundColor(Color.White)
         .border({ width: { bottom: 1 }, color: '#eee' })
 
-        // 朗读停止按钮
         if (this.aiReadingId.length > 0) {
           Row({ space: 6 }) {
             Text('⏹').fontSize(14).fontColor(Color.White)
@@ -1672,7 +1682,6 @@ export struct ChatPage {
           .onClick(() => this.stopTtsRead())
         }
 
-        // 消息区
         Stack({ alignContent: Alignment.Center }) {
           List({ scroller: this.scroller }) {
             ForEach(this.messages, (msg: ChatMessage) => {
@@ -1708,8 +1717,8 @@ export struct ChatPage {
                     this.onFaceSwapPickUpload(kind, cardId, cardType, msg)
                   },
                   onPlayVideo: (url: string) => this.onPlayVideo(url),
-                  onSaveVideo: (url: string) => { this.onSaveVideo(url) },       // ⭐ 新增
-                  onShareVideo: (url: string) => { this.onShareVideo(url) },     // ⭐ 新增
+                  onSaveVideo: (url: string) => { this.onSaveVideo(url) },
+                  onShareVideo: (url: string) => { this.onShareVideo(url) },
                 })
               }
             }, (msg: ChatMessage) => {
@@ -1717,9 +1726,7 @@ export struct ChatPage {
                 : (msg.thumbUrl && msg.thumbUrl.length > 0 ? 'thumb' : 'no')
               const readingFlag = this.aiReadingId === msg.id ? 'R' : 'N'
               const playingFlag = this.playingMsgId === msg.id ? 'P' : 'N'
-              const dlFlag = msg.content.indexOf('[DL:') >= 0 ? 'D' : 'N'
-              // ⭐ 卡片消息：把 cardJson 长度也塞进 key，保证状态变化触发重建
-              const cardFlag = msg.cardJson.length > 0 ? `C${msg.cardJson.length}` : 'N'
+              const cardFlag = msg.cardJson.length > 0 ? `C${msg.cardVersion ?? 0}` : 'N'
               return `${msg.id}_${msg.completed}_${msg.content.length}_${imgFlag}_${readingFlag}_${playingFlag}_${cardFlag}`
             })
           }
@@ -1751,8 +1758,6 @@ export struct ChatPage {
         }
         .layoutWeight(1).width('100%')
 
-        // 图片附件条
-        // ⭐ 统一附件条（图片 + 视频 + 文档）
         if (this.getAllAttachments().length > 0) {
           Column() {
             Row() {
@@ -1783,7 +1788,6 @@ export struct ChatPage {
           .alignItems(HorizontalAlign.Start)
         }
 
-        // 输入栏
         InputBar({
           text: $inputText,
           loading: this.isLoadingNow() || this.isSending,
@@ -1837,7 +1841,7 @@ export struct ChatPage {
         currentSessionId: this.currentSessionId,
         onSelect: (sid: string) => { this.selectConversation(sid) },
         onLogout: () => { this.logout() },
-        onClearCache: () => { this.onCacheCleared() },      // ⭐ 新增
+        onClearCache: () => { this.onCacheCleared() },
       })
         .width('75%').height('100%')
 

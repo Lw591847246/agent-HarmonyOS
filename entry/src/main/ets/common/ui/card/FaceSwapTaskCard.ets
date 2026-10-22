@@ -1,14 +1,13 @@
-import { ChatCard, ChatCardButton, FaceSwapTaskItem } from '../../../domain/models/ChatCard'
+import { ChatCard, ChatCardButton, FaceSwapTaskItem, AgentTraceItem } from '../../../domain/models/ChatCard'
 import { CardStyles } from './CardStyles'
 import { MediaCache } from '../../../common/utils/MediaCache'
 import { Logger } from '../../../common/logger/Logger'
 import { fileUri } from '@kit.CoreFileKit'
 
 
-// ⭐ 每个 task 独立管理"缓存→播放"的状态
 @Component
 struct TaskVideoCell {
-  @Prop videoUrl: string         // 相对路径（后端给的 /agent/v1/chat/job/xxx/video）
+  @Prop videoUrl: string
   @Prop taskId: string
 
   @State private localPath: string = ''
@@ -29,7 +28,6 @@ struct TaskVideoCell {
     this.loading = true
     this.loadFailed = false
     try {
-      // ⭐ 优先从 MediaCache 拿本地路径，未命中会自动下载
       const p = await MediaCache.ensureCached(this.videoUrl)
       if (p && p.length > 0) {
         this.localPath = p
@@ -52,7 +50,7 @@ struct TaskVideoCell {
         Video({
           src: this.localPath.startsWith('file://')
             ? this.localPath
-            : fileUri.getUriFromPath(this.localPath),   // ⭐ 转成 file://xxx
+            : fileUri.getUriFromPath(this.localPath),
           controller: this.controller
         })
           .width('100%')
@@ -90,7 +88,6 @@ struct TaskVideoCell {
         .backgroundColor('#000000')
         .borderRadius(CardStyles.RADIUS_ITEM)
       } else {
-        // ⭐ 加载中：转圈 + 提示
         Column({ space: 10 }) {
           LoadingProgress().width(36).height(36).color('#ffffff')
           Text('正在加载视频…')
@@ -145,7 +142,15 @@ export struct FaceSwapTaskCard {
       if (this.card.tasks && this.card.tasks.length > 0) {
         ForEach(this.card.tasks, (t: FaceSwapTaskItem) => {
           this.renderTaskRow(t)
-        }, (t: FaceSwapTaskItem) => `${t.task_id}_${t.status}_${t.progress}_${t.video_url ? 'V' : 'N'}_${t.duration_ms ?? 0}`)
+        }, (t: FaceSwapTaskItem) => {
+          // ⭐ 追加 trace 指纹，保证 trace 变化时行重建
+          let traceKey = ''
+          if (t.agent_trace && t.agent_trace.length > 0) {
+            const last = t.agent_trace[t.agent_trace.length - 1]
+            traceKey = `_T${t.agent_trace.length}_${last.status}_${last.text}`
+          }
+          return `${t.task_id}_${t.status}_${t.progress}_${t.video_url ? 'V' : 'N'}_${t.duration_ms ?? 0}${traceKey}`
+        })
       }
 
       if (this.card.buttons) {
@@ -174,7 +179,6 @@ export struct FaceSwapTaskCard {
   @Builder
   renderTaskRow(t: FaceSwapTaskItem) {
     Column({ space: 6 }) {
-      // 标题行：名称 + 状态
       Row({ space: CardStyles.GAP_SMALL }) {
         Text(t.video_name)
           .fontSize(CardStyles.FONT_BODY)
@@ -191,19 +195,16 @@ export struct FaceSwapTaskCard {
 
       if (t.status === 'done' && t.video_url && t.video_url.length > 0) {
         Column({ space: 8 }) {
-          // ⭐ 内嵌视频播放器（本地缓存优先 + 加载进度）
           TaskVideoCell({
             videoUrl: t.video_url,
             taskId: t.task_id
           })
 
-          // 文件信息行
           Row({ space: 6 }) {
             Text(this.formatSize(t.file_size))
               .fontSize(11)
               .fontColor(CardStyles.TEXT_HINT)
 
-            // ⭐ 任务耗时
             if (t.duration_ms && t.duration_ms > 0) {
               Text('·').fontSize(11).fontColor(CardStyles.TEXT_HINT)
               Text(`耗时 ${(t.duration_ms / 1000).toFixed(1)}s`)
@@ -221,7 +222,6 @@ export struct FaceSwapTaskCard {
           }
           .width('100%')
 
-          // 保存 / 分享
           Row({ space: 8 }) {
             Button('保存')
               .fontSize(CardStyles.FONT_SMALL)
@@ -268,6 +268,32 @@ export struct FaceSwapTaskCard {
             .textAlign(TextAlign.End)
         }
         .width('100%')
+
+        // ⭐ Agent 执行轨迹
+        if (this.hasTrace(t)) {
+          Column({ space: 4 }) {
+            ForEach(this.getTrace(t), (step: AgentTraceItem, idx: number) => {
+              Row({ space: 6 }) {
+                Text(step.icon && step.icon.length > 0
+                  ? step.icon
+                  : (step.status === 'running' ? '🔄' : (step.status === 'failed' ? '❌' : '✅')))
+                  .fontSize(11)
+                  .width(16)
+                Text(step.text)
+                  .fontSize(11)
+                  .fontColor(step.status === 'running' ? CardStyles.PRIMARY : CardStyles.TEXT_HINT)
+                  .fontWeight(step.status === 'running' ? FontWeight.Medium : FontWeight.Normal)
+                  .layoutWeight(1)
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .width('100%')
+              .alignItems(VerticalAlign.Top)
+            }, (step: AgentTraceItem, idx: number) => `${idx}_${step.status}_${step.text}`)
+          }
+          .width('100%')
+          .padding({ top: 4 })
+        }
       }
     }
     .padding(CardStyles.PADDING_ITEM)
@@ -295,5 +321,16 @@ export struct FaceSwapTaskCard {
     if (size < 1024) return `${size} B`
     if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`
     return `${(size / 1024 / 1024).toFixed(1)} MB`
+  }
+
+  private hasTrace(t: FaceSwapTaskItem): boolean {
+    if (t.agent_trace && t.agent_trace.length > 0) return true
+    const extraTrace = this.card.extra?.agent_trace
+    return extraTrace !== undefined && extraTrace !== null && extraTrace.length > 0
+  }
+
+  private getTrace(t: FaceSwapTaskItem): AgentTraceItem[] {
+    if (t.agent_trace && t.agent_trace.length > 0) return t.agent_trace
+    return this.card.extra?.agent_trace ?? []
   }
 }

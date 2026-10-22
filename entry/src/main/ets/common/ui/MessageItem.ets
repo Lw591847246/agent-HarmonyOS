@@ -34,8 +34,8 @@ export struct MessageItem {
     (kind: string, cardId: string, cardType: string) => {}
 
   onPlayVideo: (url: string) => void = (url: string) => {}
-  onSaveVideo: (url: string) => void = (url: string) => {}    // ⭐ 新增
-  onShareVideo: (url: string) => void = (url: string) => {}   // ⭐ 新增
+  onSaveVideo: (url: string) => void = (url: string) => {}
+  onShareVideo: (url: string) => void = (url: string) => {}
 
   onDownload: (relativeUrl: string) => void = () => {}
   onVoicePlay: () => void = () => {}
@@ -53,10 +53,6 @@ export struct MessageItem {
     return true
   }
 
-  /**
-   * 从用户消息 content 里提取提示词部分
-   * content 格式： "提示词\n文件：a.png、b.pdf"  或  "文件：a.png、b.pdf"
-   */
   private _promptText(): string {
     const raw: string = this.msg.content || ''
     if (!raw) return ''
@@ -65,17 +61,12 @@ export struct MessageItem {
     if (idx >= 0) {
       return raw.substring(0, idx).trim()
     }
-    // 只有附件、没有提示词
     if (raw.startsWith('文件：')) {
       return ''
     }
     return raw
   }
 
-  /**
-   * 从用户消息 content 里提取附件名数组
-   * 优先从 content 解析；content 里没有则回退到 msg.files（本地刚发送时用）
-   */
   private _fileNames(): string[] {
     const raw: string = this.msg.content || ''
 
@@ -83,9 +74,9 @@ export struct MessageItem {
       let tail = ''
       const idx = raw.indexOf('\n文件：')
       if (idx >= 0) {
-        tail = raw.substring(idx + 4)     // "\n文件：" 长度 = 4
+        tail = raw.substring(idx + 4)
       } else if (raw.startsWith('文件：')) {
-        tail = raw.substring(3)           // "文件：" 长度 = 3
+        tail = raw.substring(3)
       }
       if (tail) {
         return tail
@@ -95,10 +86,8 @@ export struct MessageItem {
       }
     }
 
-    // 回退：本地发送时的 msg.files
     return this.msg.files || []
   }
-
 
   private _extractDownloadUrl(content: string): string {
     if (!content) return ''
@@ -130,21 +119,26 @@ export struct MessageItem {
             this.onPickUpload(kind, cardId, cardType)
           },
           onPlay: (url: string) => this.onPlayVideo(url),
-          onSave: (url: string) => this.onSaveVideo(url),      // ⭐ 新增
-          onShare: (url: string) => this.onShareVideo(url),    // ⭐ 新增
+          onSave: (url: string) => this.onSaveVideo(url),
+          onShare: (url: string) => this.onShareVideo(url),
         })
       }
     }, (card: ChatCard | null) => {
       if (card === null) return 'null'
       const prog = card.extra && card.extra.progress !== undefined ? card.extra.progress : 0
       const st = card.extra && card.extra.status ? card.extra.status : ''
-      // ⭐ face_swap_task：把每个 task 状态拼进 key 触发重建
+      // ⭐ face_swap_task：把每个 task 状态 + trace 指纹拼进 key 触发重建
       let tasksKey = ''
       if (card.tasks && card.tasks.length > 0) {
         const parts: string[] = []
         for (let i = 0; i < card.tasks.length; i++) {
           const t = card.tasks[i]
-          parts.push(`${t.task_id}_${t.status}_${t.progress}_${t.video_url ? 'V' : 'N'}`)
+          let traceKey = ''
+          if (t.agent_trace && t.agent_trace.length > 0) {
+            const last = t.agent_trace[t.agent_trace.length - 1]
+            traceKey = `_T${t.agent_trace.length}_${last.status}_${last.text}`
+          }
+          parts.push(`${t.task_id}_${t.status}_${t.progress}_${t.video_url ? 'V' : 'N'}${traceKey}`)
         }
         tasksKey = parts.join('|')
       }
@@ -213,7 +207,6 @@ export struct MessageItem {
         } else {
           Row() {
             Column() {
-              // 第一行：提示词
               if (this._promptText().length > 0) {
                 Text(this._promptText())
                   .fontSize(15)
@@ -222,7 +215,6 @@ export struct MessageItem {
                   .copyOption(CopyOptions.LocalDevice)
               }
 
-              // 第二行：附件（图标 + 文件名）
               if (this._fileNames().length > 0) {
                 Row({ space: 4 }) {
                   Image($r('app.media.icon_file'))

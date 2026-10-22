@@ -3,6 +3,16 @@
  */
 
 // ============================================================
+// ⭐ 新增：Agent 执行轨迹单步
+// ============================================================
+
+export interface AgentTraceItem {
+  text: string
+  status: string      // running / done / failed
+  icon?: string       // 🔄 / ✅ / ❌
+}
+
+// ============================================================
 // LivePortrait 卡片
 // ============================================================
 
@@ -37,9 +47,10 @@ export interface FaceSwapTaskItem {
   progress: number
   error?: string
   video_url?: string
-  file_size?: number      // ⭐ 新增
-  summary?: string        // ⭐ 新增
-  duration_ms?: number    // ⭐ 新增
+  file_size?: number
+  summary?: string
+  duration_ms?: number
+  agent_trace?: AgentTraceItem[]   // ⭐ 新增
 }
 
 // ============================================================
@@ -64,6 +75,8 @@ export interface ChatCardExtra {
   fs_missing?: string[]
   fs_poll_url_template?: string
   fs_video_url_template?: string
+
+  agent_trace?: AgentTraceItem[]   // ⭐ 新增
 }
 
 export interface ChatCardItemExtra {
@@ -121,7 +134,7 @@ export class CardType {
   static readonly PROGRESS = 'progress'
   static readonly RESULT = 'result'
   static readonly ERROR = 'error'
-  static readonly FACE_SWAP_PICK_IMAGE = 'face_swap_pick_image'   // ⭐ 新增
+  static readonly FACE_SWAP_PICK_IMAGE = 'face_swap_pick_image'
   static readonly FACE_SWAP_ASSET_INPUT = 'face_swap_asset_input'
   static readonly FACE_SWAP_CONFIRM = 'face_swap_confirm'
   static readonly FACE_SWAP_TASK = 'face_swap_task'
@@ -193,8 +206,9 @@ export interface JobStatusResp {
   error?: string
   created_at?: string
   finished_at?: string
-  file_size?: number      // ⭐ 新增
-  video_url?: string      // ⭐ 新增
-  summary?: string        // ⭐ 新增
+  file_size?: number
+  video_url?: string
+  summary?: string
   duration_ms?: number
+  agent_trace?: AgentTraceItem[]   // ⭐ 新增
 }
