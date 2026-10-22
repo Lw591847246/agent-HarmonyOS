@@ -82,6 +82,7 @@ export struct ChatPage {
   private voicePendingEnd: boolean | null = null
   private readingTimer: number = 0
   private pollingTimers: Map<string, number> = new Map()
+  private disconnectPollTimers: Map<string, number> = new Map()   // ⭐ 断连轮询
   private scroller: Scroller = new Scroller()
   private currentRequest: http.HttpRequest | null = null
 
@@ -121,6 +122,9 @@ export struct ChatPage {
     this.unbindEditorListener()
     this.pollingTimers.forEach((timer: number) => { clearTimeout(timer) })
     this.pollingTimers.clear()
+    // ⭐ 清理断连轮询
+    this.disconnectPollTimers.forEach((timer: number) => { clearTimeout(timer) })
+    this.disconnectPollTimers.clear()
   }
 
   private unbindEditorListener(): void {
@@ -163,6 +167,8 @@ export struct ChatPage {
       this.currentIsPending = false
       this.loadingSessionId = ''
     }
+    // ⭐ 切回前台：恢复断连消息
+    this._recoverDroppedMessagesOnShow()
   }
 
   onPageHide(): void {
@@ -181,6 +187,8 @@ export struct ChatPage {
     this.aiReadingId = ''
     this.voiceStarting = false
     this.voicePendingEnd = null
+    // ⭐ 切到后台：暂停断连轮询
+    this._pauseAllDisconnectPolling()
   }
 
   async init(): Promise<void> {
@@ -315,6 +323,172 @@ export struct ChatPage {
     }
   }
 
+  // ============================================================
+  // ⭐ 断连恢复：3 个方法
+  // ============================================================
+
+  private _recoverDroppedMessagesOnShow(): void {
+    const sid = this.currentSessionId
+    if (!sid) return
+
+    const dropped = this.messages.filter(
+      (m: ChatMessage) => m.networkDropped === true
+    )
+
+    if (dropped.length === 0) return
+
+    Logger.i(`[ChatPage] 切回前台，恢复 ${dropped.length} 条断连消息`)
+    for (const m of dropped) {
+      this._startDisconnectPoll(sid, m.clientId, m)
+    }
+  }
+
+  private _pauseAllDisconnectPolling(): void {
+    this.disconnectPollTimers.forEach((t: number) => clearTimeout(t))
+    this.disconnectPollTimers.clear()
+    Logger.i('[ChatPage] 已暂停所有断连轮询（切后台）')
+  }
+
+  private _startDisconnectPoll(
+    sessionId: string,
+    clientId: string,
+    placeholderMsg: ChatMessage,
+  ): void {
+    const POLL_INTERVAL = 3000
+    const MAX_WAIT = 10 * 60 * 1000
+    const MAX_CONSECUTIVE_FAIL = 5
+    const INITIAL_DELAY = 1000
+
+    const pollKey = `dc_${clientId || placeholderMsg.id}`
+    if (this.disconnectPollTimers.has(pollKey)) {
+      Logger.i(`[Poll] ${pollKey} 已在轮询，跳过`)
+      return
+    }
+
+    const startedAt = placeholderMsg.networkDroppedAt || Date.now()
+    let consecutiveFail = 0
+
+    const tick = async () => {
+      // 终止 4a：用户已切走
+      if (this.currentSessionId !== sessionId) {
+        Logger.i(`[Poll] ${pollKey} 用户已切换 session，停止`)
+        this.disconnectPollTimers.delete(pollKey)
+        return
+      }
+      // 终止 4b：占位消息已被替换/移除
+      if (this.messages.indexOf(placeholderMsg) < 0) {
+        Logger.i(`[Poll] ${pollKey} 占位消息已不在列表，停止`)
+        this.disconnectPollTimers.delete(pollKey)
+        return
+      }
+      // 终止 2：超时
+      if (Date.now() - startedAt > MAX_WAIT) {
+        placeholderMsg.content = '任务超时未返回，请下拉刷新查看最新结果'
+        placeholderMsg.completed = true
+        placeholderMsg.pending = false
+        placeholderMsg.networkDropped = false
+        this.messages = [...this.messages]
+        this.disconnectPollTimers.delete(pollKey)
+        Logger.e(`[Poll] ${pollKey} 超时，停止`)
+        return
+      }
+
+      try {
+        const remote = await this.conversationVM.loadHistory(sessionId)
+        if (this.currentSessionId !== sessionId) return
+
+        if (!remote || remote.length === 0) {
+          consecutiveFail = 0
+          const t = setTimeout(tick, POLL_INTERVAL)
+          this.disconnectPollTimers.set(pollKey, t)
+          return
+        }
+
+        // 优先按 clientId 精确匹配
+        let targetUser: ChatMessage | null = null
+        if (clientId) {
+          for (const m of remote) {
+            if (m.role === 'user' && m.clientId === clientId) {
+              targetUser = m
+              break
+            }
+          }
+        }
+
+        let nextAssistant: ChatMessage | null = null
+
+        if (targetUser) {
+          const userIndex = remote.indexOf(targetUser)
+          for (let i = userIndex + 1; i < remote.length; i++) {
+            if (remote[i].role === 'assistant') {
+              nextAssistant = remote[i]
+              break
+            }
+          }
+        } else {
+          // 兜底：最后一个 assistant
+          for (let i = remote.length - 1; i >= 0; i--) {
+            if (remote[i].role === 'assistant') {
+              nextAssistant = remote[i]
+              break
+            }
+          }
+        }
+
+        // ⭐ 终止 1：任务完成
+        if (nextAssistant && nextAssistant.completed) {
+          placeholderMsg.content = nextAssistant.content
+          placeholderMsg.cardJson = nextAssistant.cardJson
+          placeholderMsg.cardVersion = nextAssistant.cardVersion
+          placeholderMsg.imageBase64 = nextAssistant.imageBase64
+          placeholderMsg.thumbUrl = nextAssistant.thumbUrl
+          placeholderMsg.imageUrl = nextAssistant.imageUrl
+          placeholderMsg.messageType = nextAssistant.messageType
+          placeholderMsg.duration = nextAssistant.duration
+          placeholderMsg.completed = true
+          placeholderMsg.pending = false
+          placeholderMsg.networkDropped = false
+          if (!placeholderMsg.clientId) placeholderMsg.clientId = nextAssistant.clientId
+          this.messages = [...this.messages]
+          this.loadingSessionId = ''
+          this.isSending = false
+          this._finishRequest(sessionId)
+          this.disconnectPollTimers.delete(pollKey)
+          Logger.i(`[Poll] ${pollKey} 任务完成，占位已替换，停止轮询`)
+          return
+        }
+
+        // 还没完成 → 继续轮询
+        consecutiveFail = 0
+        const t = setTimeout(tick, POLL_INTERVAL)
+        this.disconnectPollTimers.set(pollKey, t)
+
+      } catch (e) {
+        consecutiveFail++
+        Logger.e(`[Poll] ${pollKey} 拉取失败 ${consecutiveFail}/${MAX_CONSECUTIVE_FAIL}: ${(e as Error).message}`)
+
+        if (consecutiveFail >= MAX_CONSECUTIVE_FAIL) {
+          placeholderMsg.content = '网络异常，请下拉刷新查看结果'
+          placeholderMsg.completed = true
+          placeholderMsg.pending = false
+          placeholderMsg.networkDropped = false
+          this.messages = [...this.messages]
+          this.disconnectPollTimers.delete(pollKey)
+          Logger.e(`[Poll] ${pollKey} 连续失败，停止`)
+          return
+        }
+
+        const t = setTimeout(tick, POLL_INTERVAL * (1 + consecutiveFail))
+        this.disconnectPollTimers.set(pollKey, t)
+      }
+    }
+
+    const firstTimer = setTimeout(tick, INITIAL_DELAY)
+    this.disconnectPollTimers.set(pollKey, firstTimer)
+    Logger.i(`[Poll] ${pollKey} 启动断连轮询 clientId=${clientId || '(空)'}`)
+  }
+
+
   handleSubmit(): void {
     if (this.isSending) return
     if (this.isLoadingNow()) return
@@ -364,6 +538,14 @@ export struct ChatPage {
             }
             this.messages = [...this.messages]
             this.scrollToBottom()
+
+            // ⭐ 检测到断连 → 启动轮询
+            if (assistantMsg.networkDropped) {
+              const pollKey = `dc_${assistantMsg.clientId || assistantMsg.id}`
+              if (!this.disconnectPollTimers.has(pollKey)) {
+                this._startDisconnectPoll(requestSessionId, assistantMsg.clientId, assistantMsg)
+              }
+            }
           }
         },
         onScroll: () => {
@@ -381,6 +563,14 @@ export struct ChatPage {
             assistantMsg.completed = true
             this.messages = [...this.messages]
             this.scrollToBottom()
+
+            // ⭐ 检测到断连 → 启动轮询
+            if (assistantMsg.networkDropped) {
+              const pollKey = `dc_${assistantMsg.clientId || assistantMsg.id}`
+              if (!this.disconnectPollTimers.has(pollKey)) {
+                this._startDisconnectPoll(requestSessionId, assistantMsg.clientId, assistantMsg)
+              }
+            }
           }
         },
         onFinish: () => {

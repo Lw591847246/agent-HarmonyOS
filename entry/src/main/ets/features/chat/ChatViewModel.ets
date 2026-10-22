@@ -68,6 +68,55 @@ export class ChatViewModel {
   }
 
   // ============================================================
+  // ⭐ 断连识别 + 兜底（统一入口）
+  // ============================================================
+  private _handleStreamError(
+    assistantMsg: ChatMessage,
+    err: string,
+    onRefresh: () => void,
+  ): void {
+    const errLower = (err || '').toLowerCase()
+    const isNetworkDrop =
+      errLower.includes('peer') ||
+        errLower.includes('connection reset') ||
+        errLower.includes('econnreset') ||
+        errLower.includes('failed to receive') ||
+        errLower.includes('socket') ||
+        errLower.includes('timeout') ||
+        errLower.includes('network') ||
+        errLower.includes('broken pipe')
+
+    if (isNetworkDrop) {
+      Logger.e(`[ChatVM] 网络断连（非失败）: ${err}`)
+      assistantMsg.content = '任务仍在后台执行，稍后自动刷新…'
+      assistantMsg.completed = false
+      assistantMsg.pending = true
+      assistantMsg.networkDropped = true
+      assistantMsg.networkDroppedAt = Date.now()
+    } else {
+      Logger.e(`[ChatVM] 真正的业务错误: ${err}`)
+      assistantMsg.content = `[错误: ${err}]`
+      assistantMsg.completed = true
+    }
+    onRefresh()
+  }
+
+  /**
+   * ⭐ onFinish 兜底：如果流结束但 completed=false，说明是异常中断
+   * （覆盖 ChatUseCase 内部 onError 没回调到 ViewModel 的情况）
+   */
+  private _checkDisconnectFallback(assistantMsg: ChatMessage): void {
+    if (assistantMsg.completed) return
+    if (assistantMsg.networkDropped) return
+    // 流结束但没完成 → 异常中断
+    assistantMsg.content = '任务仍在后台执行，稍后自动刷新…'
+    assistantMsg.pending = true
+    assistantMsg.networkDropped = true
+    assistantMsg.networkDroppedAt = Date.now()
+    Logger.e(`[ChatVM] onFinish 兜底：检测到流异常中断`)
+  }
+
+  // ============================================================
   // 无附件
   // ============================================================
   async sendStream(opt: SendStreamOptionsExt): Promise<http.HttpRequest> {
@@ -78,6 +127,13 @@ export class ChatViewModel {
     if (opt.onSessionIdChange && sid) {
       opt.onSessionIdChange(sid)
     }
+
+    // ⭐ 包装 onFinish：加兜底检测
+    const wrappedOnFinish = () => {
+      this._checkDisconnectFallback(opt.assistantMsg)
+      opt.onFinish()
+    }
+
     const finalOpt: SendStreamOptions = {
       text: opt.text,
       sessionId: sid,
@@ -87,7 +143,7 @@ export class ChatViewModel {
       onScroll: opt.onScroll,
       onDone: opt.onDone,
       onCard: opt.onCard,
-      onFinish: opt.onFinish,
+      onFinish: wrappedOnFinish,
     }
     return this.uc.sendStream(finalOpt)
   }
@@ -103,6 +159,12 @@ export class ChatViewModel {
     if (opt.onSessionIdChange && sid) {
       opt.onSessionIdChange(sid)
     }
+
+    const wrappedOnFinish = () => {
+      this._checkDisconnectFallback(opt.assistantMsg)
+      opt.onFinish()
+    }
+
     const finalOpt: SendWithAttachmentsOptions = {
       text: opt.text,
       sessionId: sid,
@@ -114,7 +176,7 @@ export class ChatViewModel {
       onScroll: opt.onScroll,
       onDone: opt.onDone,
       onCard: opt.onCard,
-      onFinish: opt.onFinish,
+      onFinish: wrappedOnFinish,
     }
     return this.uc.sendWithAttachments(finalOpt)
   }
@@ -137,7 +199,7 @@ export class ChatViewModel {
     optionKey: string,
     text: string,
     clientId: string,
-    fileId: string,                    // ⭐ 新增
+    fileId: string,
     assistantMsg: ChatMessage,
     onRefresh: () => void,
     onDone: (info: SseDoneInfo) => void,
@@ -160,9 +222,13 @@ export class ChatViewModel {
       dto.file_id = fileId
     }
 
+    const wrappedOnFinish = () => {
+      this._checkDisconnectFallback(assistantMsg)
+      onFinish()
+    }
+
     const cb: StreamCallbacks = {
       onChunk: (chunk: string) => {
-        // ⭐ 收到文本说明卡片流程结束，清空卡片
         if (assistantMsg.cardJson.length > 0) {
           assistantMsg.cardJson = ''
         }
@@ -178,11 +244,9 @@ export class ChatViewModel {
         onRefresh()
       },
       onDone: onDone,
-      onFinish: onFinish,
+      onFinish: wrappedOnFinish,
       onError: (err: string) => {
-        assistantMsg.content = `[错误: ${err}]`
-        assistantMsg.completed = true
-        onRefresh()
+        this._handleStreamError(assistantMsg, err, onRefresh)
       },
     }
 

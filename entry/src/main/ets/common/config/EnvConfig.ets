@@ -4,6 +4,6 @@
  */
 export class EnvConfig {
   // 服务地址（内网穿透）
-  static readonly AUTH_BASE_URL: string = 'http://7ca86762.r26.cpolar.top'
-  static readonly AGENT_BASE_URL: string = 'http://6f26d61f.r26.cpolar.top'
+  static readonly AUTH_BASE_URL: string = 'http://609993bc.r26.cpolar.top'
+  static readonly AGENT_BASE_URL: string = 'http://29ce4c72.r26.cpolar.top'
 }
